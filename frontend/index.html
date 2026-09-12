@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AeroVoice Flight Controller</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <span class="logo">AV</span>
+        <div>
+          <h1>AeroVoice</h1>
+          <p class="tag">Voice ATC for AI agent fleets · Speechmatics Realtime</p>
+        </div>
+      </div>
+      <div id="connBadge" class="badge idle">Idle</div>
+    </header>
+
+    <section class="listen-panel" id="listenPanel">
+      <div class="orb" id="orb"></div>
+      <div class="listen-label" id="listenLabel">Press Listen</div>
+      <div class="partial" id="partial"></div>
+      <div class="final" id="final"></div>
+      <div class="controls">
+        <button id="btnListen" class="primary">Listen</button>
+        <button id="btnStop" class="ghost" disabled>Stop</button>
+      </div>
+      <p class="hint">Try: “status” · “pause fake build” · “kill log spam” then “confirm kill” · “redirect research to docs”</p>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <div class="card-head">
+          <h2>Workers</h2>
+          <button id="btnRefresh" class="ghost sm">Refresh</button>
+        </div>
+        <table id="workersTable">
+          <thead>
+            <tr><th>Name</th><th>Status</th><th>PID</th><th>Target</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Audit log</h2>
+          <span class="muted">prove-it receipts</span>
+        </div>
+        <ul id="auditList" class="audit"></ul>
+      </div>
+    </section>
+
+    <section class="card fallback">
+      <h2>Text fallback <span class="muted">(demo without mic)</span></h2>
+      <form id="textForm" class="text-row">
+        <input id="textCmd" type="text" placeholder="status / pause fake build / kill log spam / confirm kill" autocomplete="off" />
+        <button type="submit" class="primary sm">Send</button>
+      </form>
+      <pre id="cmdResult" class="result"></pre>
+    </section>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
