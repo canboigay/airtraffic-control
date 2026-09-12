@@ -691,20 +691,82 @@ function actionsSig(w) {
 
 function ensureWorkerLivePane(row, w) {
   let logWrap = row.querySelector(".worker-live");
-  if (logWrap) return logWrap;
+  if (logWrap) {
+    // keep existing inputs focused; just refresh head label
+    const title = logWrap.querySelector("[data-live-title]");
+    if (title) title.textContent = leftOffTitle(w);
+    const dot = logWrap.querySelector(".live-dot");
+    if (dot) {
+      dot.classList.toggle("idle", w.status === "idle");
+      dot.classList.toggle("stale", w.status === "stale");
+    }
+    return logWrap;
+  }
   logWrap = document.createElement("div");
   logWrap.className = "worker-live";
+  const showSteer = w.status !== "killed";
   logWrap.innerHTML = `
     <div class="worker-live-head">
-      <span class="live-dot" aria-hidden="true"></span>
-      <span>Live log</span>
+      <span class="live-dot ${w.status === "idle" ? "idle" : ""} ${w.status === "stale" ? "stale" : ""}" aria-hidden="true"></span>
+      <span data-live-title>${escapeHtml(leftOffTitle(w))}</span>
       <code class="wid">${escapeHtml(w.id)}</code>
     </div>
-    <pre class="worker-live-log" data-live-log="${escapeHtml(w.id)}">Connecting…</pre>`;
+    <div class="worker-live-meta" data-live-meta="${escapeHtml(w.id)}"></div>
+    <pre class="worker-live-log" data-live-log="${escapeHtml(w.id)}">Connecting…</pre>
+    ${showSteer ? `<div class="steer-inline">
+      <input type="text" placeholder="Steer prompt…" data-steer-input="${escapeHtml(w.id)}" autocomplete="off" />
+      <button type="button" class="btn sm primary" data-act="steer-send" data-id="${escapeHtml(w.id)}">Send</button>
+    </div>` : ""}`;
   row.appendChild(logWrap);
-  // one-shot fill so expand isn't blank until the 1s poller
+  const input = logWrap.querySelector("[data-steer-input]");
+  if (input) {
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        sendSteerPrompt(w.id, input);
+      }
+    });
+    // don't toggle expand when interacting
+    input.addEventListener("click", (ev) => ev.stopPropagation());
+  }
+  const btn = logWrap.querySelector('[data-act="steer-send"]');
+  if (btn) btn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    sendSteerPrompt(w.id, input);
+  });
   queueMicrotask(() => { tickLiveLogs(); });
   return logWrap;
+}
+
+function leftOffTitle(w) {
+  const src = (w.source || "").toLowerCase();
+  if (src === "session" || src === "cli") return "Left off";
+  return "Live log";
+}
+
+async function sendSteerPrompt(id, inputEl) {
+  const input = inputEl || document.querySelector(`[data-steer-input="${CSS.escape(id)}"]`);
+  const prompt = (input && input.value || "").trim();
+  if (!prompt) return;
+  try {
+    const data = await postJson(`/api/workers/${encodeURIComponent(id)}/steer`, {
+      prompt,
+      method: "auto",
+    });
+    if (input) input.value = "";
+    afterUiAction(`steer ${id}`, data, {
+      spoken: data.spoken_reply || data.steer_prompt?.summary || "Prompt sent.",
+      action: "steer_prompt",
+    });
+    await refreshWorkers().catch(() => {});
+    tickLiveLogs();
+  } catch (e) {
+    afterUiAction(`steer ${id}`, {}, {
+      spoken: e.message || String(e),
+      action: "steer_prompt",
+    });
+  }
 }
 
 function syncRedirectInline(row, w) {
@@ -846,7 +908,7 @@ function renderWorkers(workers) {
   // KPIs from visible set (product face)
   const count = (s) => list.filter((w) => w.status === s).length;
   const set = (id, v) => { const el = $(id); if (el) el.textContent = String(v); };
-  set("kpiRunning", count("running") + count("redirected"));
+  set("kpiRunning", count("running") + count("idle") + count("stale") + count("redirected"));
   set("kpiPaused", count("paused"));
   set("kpiKilled", count("killed"));
   startLiveLogPolling();
@@ -968,9 +1030,22 @@ async function fetchWorkerLog(id) {
   if (!res.ok) {
     return { text: data.detail || data.error || `inspect failed (${res.status})`, summary: "" };
   }
-  const lines = data.lines || data.log_lines || data.tail || [];
+  const left = data.left_off || {};
+  const lines = (left.lines && left.lines.length ? left.lines : null)
+    || data.lines || data.log_lines || data.tail || [];
   const arr = Array.isArray(lines) ? lines : String(lines).split("\n");
-  const text = arr.length ? arr.join("\n") : (data.detail || data.summary || "(no log output yet)");
+  let text = arr.length ? arr.join("\n") : (data.detail || data.summary || "(no log output yet)");
+  if (!arr.length && (left.note || data.note)) {
+    text = left.note || data.note;
+  }
+  const metaBits = [];
+  if (left.source_kind) metaBits.push(left.source_kind);
+  if (left.source_path) metaBits.push(left.source_path.split("/").slice(-2).join("/"));
+  if (data.session_id) metaBits.push("session " + String(data.session_id).slice(0, 8) + "…");
+  if (data.activity) metaBits.push(data.activity);
+  if (data.cpu_pct != null) metaBits.push("cpu " + Number(data.cpu_pct).toFixed(1) + "%");
+  const metaEl = document.querySelector(`[data-live-meta="${CSS.escape(id)}"]`);
+  if (metaEl) metaEl.textContent = metaBits.join(" · ");
   return { text, summary: data.summary || data.spoken_reply || "", raw: data };
 }
 

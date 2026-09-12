@@ -511,6 +511,16 @@ h3 {
   background: var(--accent-soft);
   border: 1px solid rgba(10, 132, 255, 0.28);
 }
+.status.idle {
+  color: #64d2ff;
+  background: rgba(100, 210, 255, 0.12);
+  border: 1px solid rgba(100, 210, 255, 0.28);
+}
+.status.stale {
+  color: #ff9f0a;
+  background: rgba(255, 159, 10, 0.14);
+  border: 1px solid rgba(255, 159, 10, 0.28);
+}
 
 /* —— Inspect drawer —— */
 .inspect-drawer {
@@ -777,3 +787,35 @@ h3 {
   text-transform: lowercase;
   letter-spacing: 0.02em;
 }
+
+.steer-inline {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.steer-inline input {
+  flex: 1;
+  min-width: 120px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.28);
+  color: var(--label);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+.steer-inline input:focus {
+  outline: none;
+  border-color: rgba(10, 132, 255, 0.55);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.worker-live-meta {
+  padding: 0 12px 6px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+  font-family: var(--mono);
+}
+.live-dot.idle { background: #64d2ff; box-shadow: 0 0 8px rgba(100, 210, 255, 0.7); animation: none; }
+.live-dot.stale { background: #ff9f0a; box-shadow: 0 0 8px rgba(255, 159, 10, 0.7); animation: none; }

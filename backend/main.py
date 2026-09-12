@@ -86,6 +86,11 @@ class RedirectRequest(BaseModel):
     target: str
 
 
+class SteerPromptRequest(BaseModel):
+    prompt: str
+    method: str = "auto"  # inbox | tty | auto
+
+
 class TextCommandRequest(BaseModel):
     text: str
     source: str = "text"
@@ -230,6 +235,30 @@ def restart_worker(worker_id: str) -> dict[str, Any]:
     return result
 
 
+
+
+@app.post("/api/workers/{worker_id}/steer")
+def steer_worker(worker_id: str, body: SteerPromptRequest) -> dict[str, Any]:
+    """Prompt an active session/CLI from the tower UI (same path as voice/text)."""
+    try:
+        result = registry.steer_prompt(worker_id, body.prompt, method=body.method or "auto")
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except (RuntimeError, PermissionError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    audit_log.record(
+        "steer_prompt",
+        worker_id=worker_id,
+        detail={
+            "method": (result.get("steer_prompt") or {}).get("method"),
+            "summary": (result.get("steer_prompt") or {}).get("summary"),
+        },
+        before=result.get("before"),
+        after=result.get("after"),
+        source="api",
+    )
+    spoken = (result.get("steer_prompt") or {}).get("summary") or "Prompt queued."
+    return {**result, "spoken_reply": spoken, "action": "steer_prompt"}
 
 
 @app.get("/api/workers/{worker_id}/inspect")

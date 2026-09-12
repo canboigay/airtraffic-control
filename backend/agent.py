@@ -177,6 +177,35 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "steer_prompt",
+            "description": (
+                "Send a free-text prompt into an active god/claude session or CLI "
+                "(agy/grok/gemini). Writes a safe inbox and, on explicit send, may "
+                "inject the tty. Prefer this for sessions; use redirect_worker for "
+                "God RT quiet verbs. Allowed on protected sessions (no pause/kill)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "worker_id": {
+                        "type": "string",
+                        "description": "Worker id or name from the current fleet list.",
+                    },
+                    "prompt": {"type": "string", "description": "Text to send into the session."},
+                    "method": {
+                        "type": "string",
+                        "enum": ["auto", "inbox", "tty"],
+                        "description": "auto=inbox+tty when available; inbox=safe only; tty=force inject.",
+                    },
+                },
+                "required": ["worker_id", "prompt"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "restart_worker",
             "description": "Restart a demo-owned worker, or resume a discovered process if it is paused.",
             "parameters": {
@@ -418,6 +447,27 @@ def _exec_tool(
             source=source,
         )
         return {"ok": True, "action": "redirect", "result": result}
+
+
+    if name == "steer_prompt":
+        wid = args["worker_id"]
+        prompt = args.get("prompt") or args.get("target") or ""
+        method = args.get("method") or "auto"
+        result = registry.steer_prompt(wid, prompt, method=method)
+        audit_log.record(
+            "steer_prompt",
+            worker_id=wid,
+            before=result.get("before"),
+            after=result.get("after"),
+            detail={
+                "prompt": prompt[:200],
+                "method": method,
+                "delivery": result.get("steer_prompt"),
+                "transcript": heard,
+            },
+            source=source,
+        )
+        return {"ok": True, "action": "steer_prompt", "result": result}
 
     if name == "restart_worker":
         wid = args["worker_id"]
@@ -703,7 +753,7 @@ def _fast_fleet_action(
 
     action = cmd.action
     wid = cmd.worker_id
-    if action in {"pause", "resume", "kill", "redirect", "inspect", "session"}:
+    if action in {"pause", "resume", "kill", "redirect", "inspect", "session", "steer_prompt"}:
         # Prefer live fleet match (covers mcp-hands etc.) then rule alias / memory
         live = _match_worker_in_text(heard, fleet)
         if live:
@@ -733,6 +783,10 @@ def _fast_fleet_action(
         if not cmd.target:
             return None
         tool, args = "redirect_worker", {"worker_id": wid, "target": cmd.target}
+    elif action == "steer_prompt":
+        if not cmd.target:
+            return None
+        tool, args = "steer_prompt", {"worker_id": wid, "prompt": cmd.target, "method": "auto"}
     elif action == "pause_all":
         tool, args = "pause_all", {"scope": cmd.scope or "demo"}
     elif action == "resume_all":

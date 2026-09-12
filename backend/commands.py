@@ -226,13 +226,37 @@ def parse_command(transcript: str) -> ParsedCommand | None:
             memory_ref="it",
         )
 
-    # ask/tell god-rt for quiet verb (before bare "status" matching)
+    # ask/tell: god-rt quiet verb → redirect; session/cli → steer_prompt
     m_ask = re.search(r"\b(?:ask|tell|have)\b(.+?)\b(?:for|to)\b(.+)$", text)
     if m_ask:
         left, right = m_ask.group(1).strip(), m_ask.group(2).strip()
         wid = _find_worker(left)
-        if wid and right and ("god" in left or wid == "god-rt"):
-            return ParsedCommand(action="redirect", worker_id=wid, target=right, raw=raw)
+        if wid and right:
+            if wid == "god-rt" or (wid.startswith("god-rt") and "session" not in wid):
+                return ParsedCommand(action="redirect", worker_id=wid, target=right, raw=raw)
+            if wid in {
+                "god-session",
+                "claude-session",
+                "agy-cli",
+                "grok-cli",
+                "gemini-cli",
+            } or "session" in wid or wid.endswith("-cli"):
+                return ParsedCommand(
+                    action="steer_prompt", worker_id=wid, target=right, raw=raw
+                )
+
+    # "prompt <worker> with|: <text>" / "prompt <worker> <text>"
+    m_prompt = re.search(
+        r"\bprompt\b\s+(.+?)\s+(?:with|:)\s+(.+)$",
+        text,
+    )
+    if m_prompt:
+        left, right = m_prompt.group(1).strip(), m_prompt.group(2).strip()
+        wid = _find_worker(left) or _find_worker(text)
+        if wid and right:
+            return ParsedCommand(
+                action="steer_prompt", worker_id=wid, target=right, raw=raw
+            )
 
     # status (fleet) — after inspect so "status of research logs" doesn't steal
     if re.search(r"\b(status|report|sitrep|what.?s going on|how are we)\b", text) or text in {
@@ -298,6 +322,17 @@ def parse_command(transcript: str) -> ParsedCommand | None:
         left, right = m.group(1).strip(), m.group(2).strip()
         wid = _find_worker(left) or _find_worker(text)
         if wid and right:
+            # Free-text prompt into session/CLI; quiet verbs stay redirect for god-rt
+            if wid in {
+                "god-session",
+                "claude-session",
+                "agy-cli",
+                "grok-cli",
+                "gemini-cli",
+            } or "session" in wid:
+                return ParsedCommand(
+                    action="steer_prompt", worker_id=wid, target=right, raw=raw
+                )
             return ParsedCommand(action="redirect", worker_id=wid, target=right, raw=raw)
         if (not wid) and right and _IT.search(left):
             return ParsedCommand(

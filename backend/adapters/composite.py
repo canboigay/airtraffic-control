@@ -93,6 +93,16 @@ class CompositeAdapter:
         adapter, wid = self._route(worker_id)
         return adapter.restart(wid)
 
+
+    def steer_prompt(self, worker_id: str, prompt: str, *, method: str = "auto"):
+        adapter, wid = self._route(worker_id)
+        fn = getattr(adapter, "steer_prompt", None)
+        if not callable(fn):
+            raise RuntimeError(f"steer_prompt not supported for {worker_id}")
+        result = fn(wid, prompt, method=method)
+        self._last_steer_adapter = adapter
+        return result
+
     def inspect_worker(self, worker_id: str, lines: int = 20) -> dict:
         adapter, wid = self._route(worker_id)
         fn = getattr(adapter, "inspect_worker", None)

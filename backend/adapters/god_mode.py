@@ -137,6 +137,7 @@ class Proc:
     command: str
     user: str = DEFAULT_USER
     tty: str = "?"
+    cpu: float = 0.0  # ps %cpu
 
     @property
     def stopped(self) -> bool:
@@ -534,7 +535,7 @@ def assign_ids(procs: list[Proc], *, stack: str) -> list[tuple[str, Proc]]:
 def read_processes(user: str = DEFAULT_USER) -> list[Proc]:
     try:
         out = subprocess.check_output(
-            ["ps", "-u", user, "-axo", "pid=,ppid=,tty=,state=,user=,command="],
+            ["ps", "-u", user, "-axo", "pid=,ppid=,tty=,state=,%cpu=,user=,command="],
             text=True,
             stderr=subprocess.DEVNULL,
         )
@@ -545,23 +546,40 @@ def read_processes(user: str = DEFAULT_USER) -> list[Proc]:
         line = line.strip()
         if not line:
             continue
-        parts = line.split(None, 5)
-        if len(parts) < 6:
-            # Fallback if tty column missing (older parse)
-            parts5 = line.split(None, 4)
-            if len(parts5) < 5:
-                continue
-            pid_s, ppid_s, state, user_s, command = parts5
-            tty_s = "?"
+        # pid ppid tty state %cpu user command
+        parts = line.split(None, 6)
+        cpu = 0.0
+        if len(parts) >= 7:
+            pid_s, ppid_s, tty_s, state, cpu_s, user_s, command = parts
+            try:
+                cpu = float(cpu_s)
+            except ValueError:
+                cpu = 0.0
         else:
-            pid_s, ppid_s, tty_s, state, user_s, command = parts
+            parts6 = line.split(None, 5)
+            if len(parts6) < 6:
+                parts5 = line.split(None, 4)
+                if len(parts5) < 5:
+                    continue
+                pid_s, ppid_s, state, user_s, command = parts5
+                tty_s = "?"
+            else:
+                pid_s, ppid_s, tty_s, state, user_s, command = parts6
         try:
             pid = int(pid_s)
             ppid = int(ppid_s)
         except ValueError:
             continue
         procs.append(
-            Proc(pid=pid, ppid=ppid, state=state, command=command, user=user_s, tty=tty_s)
+            Proc(
+                pid=pid,
+                ppid=ppid,
+                state=state,
+                command=command,
+                user=user_s,
+                tty=tty_s,
+                cpu=cpu,
+            )
         )
     return procs
 
@@ -727,6 +745,69 @@ class GodModeAdapter:
             cwd_map=cwd_map,
             role=slug,
         )
+        session_id = sess.session_id
+        # God launcher: inherit Claude --resume from child when possible
+        if session_id is None and protected and slug == "god-session":
+            from backend.session_depth import child_or_self_session_id
+            from backend.session_insight import parse_claude_resume
+
+            session_id = child_or_self_session_id(
+                proc.pid, proc.command, bp or {}, parse_resume=parse_claude_resume
+            )
+            if session_id and sess.hint and "resume" not in sess.hint:
+                from backend.session_insight import format_session_hint
+
+                hint = format_session_hint(
+                    sess.tty, sess.app, session_id, sess.cwd, role=slug
+                )
+            else:
+                hint = sess.hint
+        else:
+            hint = sess.hint
+
+        # Idle/stale for session + CLI workers (CPU quiet / sleeping)
+        from backend.session_depth import (
+            compute_activity_status,
+            find_claude_jsonl,
+            god_last_answer_path,
+        )
+
+        preview = None
+        activity = None
+        if source in {"session", "cli"}:
+            mtime = None
+            if session_id:
+                jp = find_claude_jsonl(session_id)
+                if jp is not None:
+                    try:
+                        mtime = jp.stat().st_mtime
+                    except OSError:
+                        mtime = None
+                if mtime is None:
+                    gp = god_last_answer_path(session_id, stack=self.stack)
+                    if gp is not None:
+                        try:
+                            mtime = gp.stat().st_mtime
+                        except OSError:
+                            mtime = None
+            activity = compute_activity_status(
+                state=proc.state,
+                cpu=getattr(proc, "cpu", 0.0),
+                source=source,
+                transcript_mtime=mtime,
+            )
+            if activity == "paused":
+                status = WorkerStatus.PAUSED
+            elif activity == "idle":
+                status = WorkerStatus.IDLE
+            elif activity == "stale":
+                status = WorkerStatus.STALE
+            else:
+                status = WorkerStatus.RUNNING
+
+        cpu_pct = float(getattr(proc, "cpu", 0.0) or 0.0)
+        detail = f"[{state_letter} cpu={cpu_pct:.1f}] {detail_cmd}"
+
         return Worker(
             id=worker_id,
             name=human_name(slug, proc.command, proc.pid),
@@ -741,10 +822,13 @@ class GodModeAdapter:
             session_tree=session_tree,
             session_tty=sess.tty,
             session_app=sess.app,
-            session_id=sess.session_id,
+            session_id=session_id,
             session_cwd=sess.cwd,
-            session_hint=sess.hint,
+            session_hint=hint,
             protected=protected,
+            cpu_pct=cpu_pct,
+            activity=activity or status.value,
+            left_off_preview=preview,
         )
 
     def list_workers(self) -> list[Worker]:
@@ -832,7 +916,7 @@ class GodModeAdapter:
         except PermissionError as e:
             raise PermissionError(f"cannot pause {wid} (pid={proc.pid}): {e}") from e
         state = proc_state(proc.pid, self.user) or "T"
-        refreshed = Proc(proc.pid, proc.ppid, state, proc.command, proc.user, proc.tty)
+        refreshed = Proc(proc.pid, proc.ppid, state, proc.command, proc.user, proc.tty, getattr(proc, "cpu", 0.0))
         worker = self._to_worker(wid, refreshed)
         worker.status = WorkerStatus.PAUSED
         worker.detail = f"paused via SIGSTOP (was {proc.command[:80]})"
@@ -864,7 +948,7 @@ class GodModeAdapter:
             raise RuntimeError(f"{wid} is gone (pid={proc.pid})")
         time.sleep(0.05)
         state = proc_state(proc.pid, self.user) or "S"
-        refreshed = Proc(proc.pid, proc.ppid, state, proc.command, proc.user, proc.tty)
+        refreshed = Proc(proc.pid, proc.ppid, state, proc.command, proc.user, proc.tty, getattr(proc, "cpu", 0.0))
         worker = self._to_worker(wid, refreshed)
         worker.status = WorkerStatus.RUNNING
         worker.detail = "resumed via SIGCONT"
@@ -967,15 +1051,69 @@ class GodModeAdapter:
 
 
     def inspect_worker(self, worker_id: str, lines: int = 20) -> dict:
-        """Best-effort log tail for discovered processes.
+        """Best-effort log / session left-off for discovered processes.
 
         Never fall back to a random stack `*.log` (that glued the same
         god-red campaign tail onto agy / god-session / claude-session).
         Only accept logs that clearly belong to this worker.
+
+        For session/cli workers, prefer Claude jsonl / god-last-answer /
+        agy-or-grok own transcripts — NOT campaign logs.
         """
         wid, proc = self._get(worker_id)
-        snap = self._to_worker(wid, proc).snapshot()
+        # Need full proc table for child session_id / enrich
+        all_procs = self._snapshot_procs()
+        by_pid = {p.pid: p for p in all_procs}
+        snap_worker = self._to_worker(wid, proc, all_procs=all_procs, by_pid=by_pid)
+        snap = snap_worker.snapshot()
         slug = slug_for(proc, stack=self.stack)
+
+        # Session / CLI: left-off transcript first (never campaign logs)
+        if snap.get("source") in {"session", "cli"} or slug in {
+            "god-session",
+            "claude-session",
+            "agy-cli",
+            "grok-cli",
+            "gemini-cli",
+        }:
+            from backend.session_depth import resolve_left_off
+
+            left = resolve_left_off(
+                source=snap.get("source"),
+                slug=slug,
+                session_id=snap.get("session_id"),
+                pid=proc.pid,
+                cwd=snap.get("session_cwd"),
+                stack=self.stack,
+                lines=max(1, min(int(lines or 20), 40)),
+            )
+            lines_out = list(left.lines)
+            if not lines_out and left.note:
+                lines_out = [left.note]
+            summary = (
+                f"{snap.get('name') or wid}: left off — "
+                + (lines_out[-1] if lines_out else (left.note or "no transcript yet"))
+            )
+            if len(summary) > 200:
+                summary = summary[:197] + "..."
+            return {
+                "worker_id": wid,
+                "worker": snap,
+                "source": snap.get("source") or "session",
+                "log_path": left.source_path,
+                "lines": lines_out,
+                "line_count": len(lines_out),
+                "target": snap.get("target"),
+                "cmdline": snap.get("cmdline_short") or proc.command[:160],
+                "state": proc.state,
+                "cpu_pct": snap.get("cpu_pct"),
+                "activity": snap.get("activity") or snap.get("status"),
+                "session_id": snap.get("session_id"),
+                "left_off": left.as_dict(),
+                "summary": summary,
+                "note": left.note or left.source_kind or "session transcript",
+            }
+
         candidates: list[Path] = []
         # cmdline may point at a .log file — only keep if path mentions pid/slug/wid
         for tok in _tokens(proc.command):
@@ -1051,13 +1189,57 @@ class GodModeAdapter:
             "note": "no log file",
         }
 
+
+    def steer_prompt(
+        self,
+        worker_id: str,
+        prompt: str,
+        *,
+        method: str = "auto",
+    ) -> dict:
+        """Deliver an operator prompt to a live session/CLI (inbox + optional tty).
+
+        Protected god/claude: allowed (steer-prompt only). Never signals.
+        God RT quiet verbs still go through redirect(); this is free-text prompt.
+        """
+        from backend.session_depth import deliver_steer_prompt
+
+        wid, proc = self._get(worker_id)
+        # Read-only enrich for session_id / tty — no _guard SIG path
+        all_procs = self._snapshot_procs()
+        by_pid = {p.pid: p for p in all_procs}
+        worker = self._to_worker(wid, proc, all_procs=all_procs, by_pid=by_pid)
+        # Refuse GUI denylist / ATC itself, but allow protected sessions
+        if is_denied_cmdline(proc.command):
+            raise PermissionError(
+                f"refusing to steer-prompt protected process pid={proc.pid}"
+            )
+        if proc.pid in self._deny_pids():
+            raise PermissionError(
+                f"refusing to steer-prompt protected process pid={proc.pid}"
+            )
+        delivery = deliver_steer_prompt(
+            worker_id=wid,
+            prompt=prompt,
+            session_id=worker.session_id,
+            tty=worker.session_tty or (None if proc.tty in {"?", "??"} else proc.tty),
+            pid=proc.pid,
+            source=worker.source,
+            method=method,
+        )
+        self._last_steer = {
+            "kind": "steer_prompt",
+            **delivery.as_dict(),
+        }
+        return delivery.as_dict()
+
     def describe_interface(self) -> dict[str, Any]:
         workers = self.list_workers()
         return {
             "name": "GodModeAdapter",
             "status": "live",
             "worker_count": len(workers),
-            "methods": ["list_workers", "pause", "resume", "kill", "redirect", "restart", "inspect_worker"],
+            "methods": ["list_workers", "pause", "resume", "kill", "redirect", "restart", "inspect_worker", "steer_prompt"],
             "stack": self.stack,
             "include_demo": self.include_demo,
             "notes": self._note,

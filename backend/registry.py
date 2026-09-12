@@ -15,6 +15,8 @@ LOGS_DIR = ROOT / "logs"
 
 class WorkerStatus(str, Enum):
     RUNNING = "running"
+    IDLE = "idle"
+    STALE = "stale"
     PAUSED = "paused"
     KILLED = "killed"
     REDIRECTED = "redirected"
@@ -41,6 +43,9 @@ class Worker:
     session_cwd: str | None = None
     session_hint: str | None = None  # short card label
     protected: bool = False  # god/claude session: listed read-only unless explicit id/PID
+    cpu_pct: float | None = None  # ps %cpu when known
+    activity: str | None = None  # running|idle|stale|paused mirror for session/cli
+    left_off_preview: str | None = None  # one-line where session left off
 
     def snapshot(self) -> dict[str, Any]:
         d = asdict(self)
@@ -282,8 +287,8 @@ class Registry:
                     "reason": f"{src or 'unknown'} worker excluded from {scope} fleet resume",
                 })
                 continue
-            if st == "running":
-                skipped.append({"id": w["id"], "status": st, "reason": "already running"})
+            if st in {"running", "idle", "stale", "redirected"}:
+                skipped.append({"id": w["id"], "status": st, "reason": f"already {st}"})
                 continue
             if st == "killed" and src == "god":
                 skipped.append({"id": w["id"], "status": st, "reason": "killed god worker"})
@@ -375,6 +380,35 @@ class Registry:
         before = self.get(worker_id)
         worker = self.adapter.restart(worker_id)
         return {"before": before, "after": worker.snapshot()}
+
+
+    def steer_prompt(
+        self,
+        worker_id: str,
+        prompt: str,
+        *,
+        method: str = "auto",
+    ) -> dict[str, Any]:
+        """Prompt an active session/CLI worker (inbox + optional explicit tty inject).
+
+        Allowed on protected god/claude sessions (steer-prompt only — no SIG*).
+        Voice/text/UI all hit this path.
+        """
+        wid = self.resolve_id(worker_id) or worker_id
+        before = self.get(wid)
+        if not before:
+            raise KeyError(f"unknown worker: {worker_id}")
+        fn = getattr(self.adapter, "steer_prompt", None)
+        if not callable(fn):
+            raise RuntimeError(f"steer_prompt not supported for {wid}")
+        result = fn(wid, prompt, method=method)
+        after = self.get(wid) or before
+        out: dict[str, Any] = {
+            "before": before,
+            "after": after if isinstance(after, dict) else after,
+            "steer_prompt": result if isinstance(result, dict) else {"result": result},
+        }
+        return out
 
     def inspect_worker(self, worker_id: str, lines: int = 20) -> dict[str, Any]:
         """Tail logs for a worker (demo log file or god-mode best-effort)."""
