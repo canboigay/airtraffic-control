@@ -334,7 +334,8 @@ def parse_command(transcript: str) -> ParsedCommand | None:
                     action="steer_prompt", worker_id=wid, target=right, raw=raw
                 )
             return ParsedCommand(action="redirect", worker_id=wid, target=right, raw=raw)
-        if (not wid) and right and _IT.search(left):
+        # "steer it to …" / "steer to …" (panel focus fills worker)
+        if (not wid) and right and ((not left) or _IT.search(left)):
             return ParsedCommand(
                 action="redirect",
                 worker_id=None,

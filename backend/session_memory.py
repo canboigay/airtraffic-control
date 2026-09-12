@@ -39,10 +39,26 @@ class SessionMemory:
     def __init__(self, maxlen: int = 12) -> None:
         self._lock = Lock()
         self._turns: deque[Turn] = deque(maxlen=max(2, int(maxlen)))
+        # UI slide-out panel focus — preferred anaphora target while open
+        self._focus_worker_id: str | None = None
 
     def clear(self) -> None:
         with self._lock:
             self._turns.clear()
+
+    def set_focus(self, worker_id: str | None) -> None:
+        """Set or clear the tower focus worker (session panel selection)."""
+        wid = (worker_id or "").strip() or None
+        with self._lock:
+            self._focus_worker_id = wid
+
+    def focus_worker_id(self) -> str | None:
+        with self._lock:
+            return self._focus_worker_id
+
+    def clear_focus(self) -> None:
+        with self._lock:
+            self._focus_worker_id = None
 
     def record(
         self,
@@ -77,7 +93,10 @@ class SessionMemory:
             return self._turns[-1] if self._turns else None
 
     def last_worker_id(self) -> str | None:
+        """Prefer open panel focus, else most recent turn with a worker."""
         with self._lock:
+            if self._focus_worker_id:
+                return self._focus_worker_id
             for turn in reversed(self._turns):
                 if turn.worker_id:
                     return turn.worker_id
@@ -127,28 +146,56 @@ class SessionMemory:
             if meta:
                 bits.append("(" + ", ".join(meta) + ")")
             lines.append("- " + " | ".join(bits))
+        focus = self.focus_worker_id()
         lw = self.last_worker_id()
         la = self.last_action()
+        if focus:
+            lines.append(
+                f"UI focus (slide-out panel open): worker={focus}. "
+                "When the utterance is unambiguous about 'it'/that/this session "
+                "(pause it, what's it doing, steer it to …), resolve to this focus worker."
+            )
         if lw or la:
             lines.append(
                 f"Anaphora defaults: last_worker={lw or '—'} last_action={la or '—'} "
-                f"last_target={self.last_target() or '—'}."
+                f"last_target={self.last_target() or '—'} focus={focus or '—'}."
             )
         lines.append(
             "Resolve pronouns (it/that/them/him) and 'again'/'same' against this history "
-            "when the current utterance omits the worker or action."
+            "when the current utterance omits the worker or action. "
+            "Prefer UI focus over dialogue history when the panel is open."
         )
         return "\n".join(lines)
 
     def snapshot(self) -> dict[str, Any]:
+        # Compute under one lock (methods like last_worker_id also take the lock).
         with self._lock:
-            return {
-                "count": len(self._turns),
-                "last_worker_id": self.last_worker_id(),
-                "last_action": self.last_action(),
-                "last_target": self.last_target(),
-                "turns": [t.as_dict() for t in self._turns],
-            }
+            turns = list(self._turns)
+            focus = self._focus_worker_id
+        last_w = focus
+        if not last_w:
+            for turn in reversed(turns):
+                if turn.worker_id:
+                    last_w = turn.worker_id
+                    break
+        last_a = None
+        for turn in reversed(turns):
+            if turn.action and turn.action not in {"chat", "unknown", "status"}:
+                last_a = turn.action
+                break
+        last_t = None
+        for turn in reversed(turns):
+            if turn.target:
+                last_t = turn.target
+                break
+        return {
+            "count": len(turns),
+            "focus_worker_id": focus,
+            "last_worker_id": last_w,
+            "last_action": last_a,
+            "last_target": last_t,
+            "turns": [t.as_dict() for t in turns],
+        }
 
 
 # Shared singleton used by FastAPI command handlers

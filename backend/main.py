@@ -75,6 +75,7 @@ class TokenRequest(BaseModel):
 class CommandRequest(BaseModel):
     transcript: str
     source: str = "voice"
+    focus_worker_id: str | None = None
 
 
 class KillConfirmRequest(BaseModel):
@@ -94,6 +95,11 @@ class SteerPromptRequest(BaseModel):
 class TextCommandRequest(BaseModel):
     text: str
     source: str = "text"
+    focus_worker_id: str | None = None
+
+
+class FocusRequest(BaseModel):
+    worker_id: str | None = None
 
 
 @app.get("/api/health")
@@ -330,9 +336,24 @@ def clear_memory() -> dict[str, Any]:
     return {"ok": True, "cleared": True}
 
 
+@app.post("/api/focus")
+def set_focus(body: FocusRequest) -> dict[str, Any]:
+    """Set tower UI focus (slide-out worker panel) for voice/text anaphora."""
+    tower_memory.set_focus(body.worker_id)
+    return {"ok": True, "focus_worker_id": tower_memory.focus_worker_id()}
+
+
+@app.delete("/api/focus")
+def clear_focus() -> dict[str, Any]:
+    tower_memory.clear_focus()
+    return {"ok": True, "focus_worker_id": None}
+
+
 @app.post("/api/command")
 def voice_command(body: CommandRequest) -> dict[str, Any]:
     try:
+        if body.focus_worker_id is not None:
+            tower_memory.set_focus(body.focus_worker_id or None)
         return run_tower_agent(
             body.transcript,
             registry=registry,
@@ -351,6 +372,8 @@ def voice_command(body: CommandRequest) -> dict[str, Any]:
 def text_command(body: TextCommandRequest) -> dict[str, Any]:
     """Text or voice transcript → full tool-calling tower chatbot."""
     try:
+        if body.focus_worker_id is not None:
+            tower_memory.set_focus(body.focus_worker_id or None)
         return run_tower_agent(
             body.text,
             registry=registry,

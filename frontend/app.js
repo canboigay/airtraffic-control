@@ -25,10 +25,22 @@ function bindEls() {
   els.textForm = $("textForm");
   els.textCmd = $("textCmd");
   els.cmdResult = $("cmdResult");
-  els.inspectDrawer = $("inspectDrawer");
-  els.inspectTitle = $("inspectTitle");
-  els.inspectSummary = $("inspectSummary");
-  els.inspectLog = $("inspectLog");
+  els.sessionPanel = $("sessionPanel");
+  els.sessionBackdrop = $("sessionBackdrop");
+  els.sessionTitle = $("sessionTitle");
+  els.sessionBadges = $("sessionBadges");
+  els.sessionMeta = $("sessionMeta");
+  els.sessionActions = $("sessionActions");
+  els.sessionLiveDot = $("sessionLiveDot");
+  els.sessionLiveTitle = $("sessionLiveTitle");
+  els.sessionLiveId = $("sessionLiveId");
+  els.sessionLiveMeta = $("sessionLiveMeta");
+  els.sessionLiveLog = $("sessionLiveLog");
+  els.sessionSteerWrap = $("sessionSteerWrap");
+  els.sessionSteerInput = $("sessionSteerInput");
+  els.btnSessionSteer = $("btnSessionSteer");
+  els.btnCloseSession = $("btnCloseSession");
+  els.fleetPanel = document.querySelector(".fleet-panel");
 }
 
 let mediaStream = null;
@@ -62,6 +74,8 @@ const liveLogScroll = {}; // id -> stickToBottom
 /** After UI/voice steer: follow live transcript in expand pane. id -> {until, prompt, lines} */
 const steerFollow = {};
 const expandedWorkerIds = new Set(JSON.parse(localStorage.getItem("atcExpandedWorkers") || "[]"));
+/** Currently focused worker in the slide-out session panel (voice/text anaphora). */
+let selectedWorkerId = null;
 let lastWorkers = [];
 
 function loadDemoOnly() {
@@ -84,6 +98,26 @@ function isDemoWorker(w) {
   if (!w) return false;
   if (w.source === "demo") return true;
   return DEMO_IDS.has(w.id);
+}
+
+function focusPayload() {
+  return selectedWorkerId ? { focus_worker_id: selectedWorkerId } : { focus_worker_id: null };
+}
+
+async function syncFocusToServer(id) {
+  try {
+    if (id) {
+      await postJson("/api/focus", { worker_id: id });
+    } else {
+      await fetch("/api/focus", { method: "DELETE" }).catch(() => {});
+    }
+  } catch (e) {
+    console.warn("[ATC] focus sync failed", e);
+  }
+}
+
+function findWorker(id) {
+  return (lastWorkers || []).find((w) => w.id === id) || null;
 }
 
 function setTowerReply(text) {
@@ -374,7 +408,7 @@ async function handleFinalTranscript(text) {
     const res = await fetch("/api/command", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transcript: text, source: "voice" }),
+      body: JSON.stringify({ transcript: text, source: "voice", ...focusPayload() }),
     });
     const data = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
     if (!res.ok && !data.spoken_reply) {
@@ -768,6 +802,11 @@ function beginSteerFollow(id, prompt) {
     prompt: prompt || "",
     lines: 80,
   };
+  if (selectedWorkerId !== id) {
+    openSessionPanel(id, { skipFocusPost: false });
+  } else {
+    paintSessionPanel(findWorker(id) || { id });
+  }
   const pre = document.querySelector(`[data-live-log="${CSS.escape(id)}"]`);
   if (pre) {
     const banner = `>>> steered: ${prompt}\n… waiting for live reply …`;
@@ -854,7 +893,7 @@ function createWorkerRow(w) {
   if (main) {
     main.addEventListener("click", (ev) => {
       ev.preventDefault();
-      toggleWorkerExpanded(w.id);
+      openSessionPanel(w.id);
     });
   }
   return row;
@@ -863,6 +902,7 @@ function createWorkerRow(w) {
 function updateWorkerRow(row, w) {
   const expanded = expandedWorkerIds.has(w.id);
   row.classList.toggle("expanded", expanded);
+  row.classList.toggle("selected", selectedWorkerId === w.id);
 
   const nameEl = row.querySelector(".worker-name");
   if (nameEl) nameEl.textContent = w.name || w.id;
@@ -900,17 +940,14 @@ function updateWorkerRow(row, w) {
 
   const main = row.querySelector(".worker-main");
   if (main) {
-    main.title = expanded ? "Click to collapse live log" : "Click to expand live log";
+    main.title = selectedWorkerId === w.id ? "Open session panel (focused)" : "Open session panel";
   }
 
   syncRedirectInline(row, w);
 
-  if (expanded) {
-    ensureWorkerLivePane(row, w);
-  } else {
-    const live = row.querySelector(".worker-live");
-    if (live) live.remove();
-  }
+  // Live transcript + steer live in the slide-out session panel (not inline).
+  const live = row.querySelector(".worker-live");
+  if (live) live.remove();
 }
 
 function renderWorkers(workers) {
@@ -955,6 +992,11 @@ function renderWorkers(workers) {
   set("kpiPaused", count("paused"));
   set("kpiKilled", count("killed"));
   startLiveLogPolling();
+  // Keep session panel chrome in sync without remounting the live log node.
+  if (selectedWorkerId) {
+    const w = findWorker(selectedWorkerId);
+    if (w) paintSessionPanel(w);
+  }
   // Do NOT call tickLiveLogs() here — poller owns smooth updates; full re-fetch
   // on every render was racing the DOM remount and looking like open/close.
 }
@@ -1139,14 +1181,6 @@ async function tickLiveLogs() {
       try {
         const { text } = await fetchWorkerLog(id);
         paintLiveLog(id, text);
-        // keep drawer in sync if open for this id
-        if (els.inspectDrawer && !els.inspectDrawer.hidden && els.inspectTitle && (els.inspectTitle.textContent || "").includes(id)) {
-          if (els.inspectLog) {
-            const stick = els.inspectLog.scrollHeight - els.inspectLog.scrollTop - els.inspectLog.clientHeight < 40;
-            els.inspectLog.textContent = text;
-            if (stick) els.inspectLog.scrollTop = els.inspectLog.scrollHeight;
-          }
-        }
       } catch (e) {
         paintLiveLog(id, String(e.message || e));
       }
@@ -1161,11 +1195,96 @@ function persistExpandedWorkers() {
 }
 
 function toggleWorkerExpanded(id) {
+  // Legacy expand kept for live-follow; primary UX is the session panel.
   if (!id) return;
   if (expandedWorkerIds.has(id)) expandedWorkerIds.delete(id);
   else expandedWorkerIds.add(id);
   persistExpandedWorkers();
   renderWorkers(lastWorkers || []);
+}
+
+function isSessionPanelOpen() {
+  return !!(els.sessionPanel && els.sessionPanel.classList.contains("open"));
+}
+
+function paintSessionPanel(w) {
+  if (!w || !els.sessionPanel) return;
+  const id = w.id;
+  if (els.sessionTitle) els.sessionTitle.textContent = w.name || id;
+  if (els.sessionBadges) {
+    const bits = [
+      `<span class="status ${escapeHtml(w.status || "")}">${escapeHtml(w.status || "—")}</span>`,
+    ];
+    if (w.protected) bits.push('<span class="status protected">protected</span>');
+    els.sessionBadges.innerHTML = bits.join("");
+  }
+  if (els.sessionMeta) {
+    els.sessionMeta.innerHTML = workerMetaHtml(w);
+  }
+  if (els.sessionActions) {
+    els.sessionActions.innerHTML = workerActionsHtml(w);
+  }
+  if (els.sessionLiveDot) {
+    els.sessionLiveDot.classList.toggle("idle", w.status === "idle");
+    els.sessionLiveDot.classList.toggle("stale", w.status === "stale");
+  }
+  if (els.sessionLiveTitle) els.sessionLiveTitle.textContent = leftOffTitle(w);
+  if (els.sessionLiveId) els.sessionLiveId.textContent = id;
+  if (els.sessionLiveMeta) els.sessionLiveMeta.setAttribute("data-live-meta", id);
+  if (els.sessionLiveLog) {
+    els.sessionLiveLog.setAttribute("data-live-log", id);
+  }
+  if (els.sessionSteerWrap) {
+    els.sessionSteerWrap.hidden = w.status === "killed";
+  }
+  if (els.sessionSteerInput) {
+    els.sessionSteerInput.dataset.steerInput = id;
+  }
+}
+
+async function openSessionPanel(id, opts = {}) {
+  if (!id) return;
+  const w = findWorker(id) || { id, name: id, status: "—" };
+  selectedWorkerId = id;
+  expandedWorkerIds.add(id);
+  persistExpandedWorkers();
+  paintSessionPanel(w);
+  if (els.sessionPanel) {
+    els.sessionPanel.classList.add("open");
+    els.sessionPanel.setAttribute("aria-hidden", "false");
+  }
+  if (els.sessionBackdrop) {
+    els.sessionBackdrop.hidden = false;
+    // force reflow for transition
+    void els.sessionBackdrop.offsetWidth;
+    els.sessionBackdrop.classList.add("open");
+  }
+  if (els.fleetPanel) els.fleetPanel.classList.add("has-session-focus");
+  renderWorkers(lastWorkers || []);
+  if (!opts.skipFocusPost) await syncFocusToServer(id);
+  bumpLiveLogPolling();
+  queueMicrotask(() => { tickLiveLogs(); });
+}
+
+async function closeSessionPanel() {
+  const was = selectedWorkerId;
+  selectedWorkerId = null;
+  if (els.sessionPanel) {
+    els.sessionPanel.classList.remove("open");
+    els.sessionPanel.setAttribute("aria-hidden", "true");
+  }
+  if (els.sessionBackdrop) {
+    els.sessionBackdrop.classList.remove("open");
+    const bd = els.sessionBackdrop;
+    setTimeout(() => {
+      if (!selectedWorkerId) bd.hidden = true;
+    }, 300);
+  }
+  if (els.fleetPanel) els.fleetPanel.classList.remove("has-session-focus");
+  if (els.sessionLiveLog) els.sessionLiveLog.setAttribute("data-live-log", "");
+  if (els.sessionLiveMeta) els.sessionLiveMeta.setAttribute("data-live-meta", "");
+  renderWorkers(lastWorkers || []);
+  await syncFocusToServer(null);
 }
 
 function livePollMs() {
@@ -1204,26 +1323,9 @@ function stopLiveLogPolling() {
 
 async function openInspect(id) {
   try {
-    if (id && !expandedWorkerIds.has(id)) {
-      expandedWorkerIds.add(id);
-      persistExpandedWorkers();
-      renderWorkers(lastWorkers || []);
-    }
+    await openSessionPanel(id);
     const { text, summary, raw } = await fetchWorkerLog(id);
-    if (els.inspectDrawer) els.inspectDrawer.hidden = false;
-    if (els.inspectTitle) {
-      const w = (lastWorkers || []).find((x) => x.id === id);
-      els.inspectTitle.textContent = w ? `${w.name} · ${id}` : id;
-      els.inspectTitle.dataset.workerId = id;
-    }
-    if (els.inspectSummary) els.inspectSummary.textContent = summary || "Live tail";
-    if (els.inspectLog) {
-      els.inspectLog.textContent = text;
-      els.inspectLog.scrollTop = els.inspectLog.scrollHeight;
-    }
-    // scroll worker live pane into view
-    const pre = document.querySelector(`[data-live-log="${CSS.escape(id)}"]`);
-    if (pre) pre.closest(".worker-row")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    paintLiveLog(id, text);
     afterUiAction(`inspect ${id}`, raw || {}, {
       spoken: summary || `Tailing ${id}.`,
       action: "inspect",
@@ -1234,7 +1336,7 @@ async function openInspect(id) {
 }
 
 function closeInspect() {
-  if (els.inspectDrawer) els.inspectDrawer.hidden = true;
+  closeSessionPanel();
 }
 
 async function fleetPauseAll() {
@@ -1338,7 +1440,7 @@ async function submitText(ev) {
     const res = await fetch("/api/command/text", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, source: "text" }),
+      body: JSON.stringify({ text, source: "text", ...focusPayload() }),
     });
     const data = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
     if (!res.ok && !data.spoken_reply) {
@@ -1403,8 +1505,37 @@ function wire() {
   if (els.btnResumeAll) els.btnResumeAll.addEventListener("click", fleetResumeAll);
   if (els.workersList) els.workersList.addEventListener("click", onWorkersClick);
 
-  const btnCloseInspect = $("btnCloseInspect");
-  if (btnCloseInspect) btnCloseInspect.addEventListener("click", closeInspect);
+  if (els.btnCloseSession) els.btnCloseSession.addEventListener("click", () => closeSessionPanel());
+  if (els.sessionBackdrop) {
+    els.sessionBackdrop.addEventListener("click", () => closeSessionPanel());
+  }
+  if (els.sessionActions) {
+    els.sessionActions.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-act]");
+      if (!btn || !els.sessionActions.contains(btn)) return;
+      const act = btn.getAttribute("data-act");
+      const id = btn.getAttribute("data-id");
+      if (!act || !id) return;
+      ev.preventDefault();
+      workerAction(act, id);
+    });
+  }
+  if (els.btnSessionSteer) {
+    els.btnSessionSteer.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      if (!selectedWorkerId) return;
+      sendSteerPrompt(selectedWorkerId, els.sessionSteerInput);
+    });
+  }
+  if (els.sessionSteerInput) {
+    els.sessionSteerInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        if (!selectedWorkerId) return;
+        sendSteerPrompt(selectedWorkerId, els.sessionSteerInput);
+      }
+    });
+  }
 
   const btnClearTower = document.getElementById("btnClearTower");
   if (btnClearTower) {
@@ -1418,7 +1549,13 @@ function wire() {
   const towerEl = document.getElementById("towerReply");
   if (towerEl) towerEl.addEventListener("click", () => interruptTower("click"));
   window.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") interruptTower("escape");
+    if (ev.key === "Escape") {
+      if (isSessionPanelOpen()) {
+        closeSessionPanel();
+        return;
+      }
+      interruptTower("escape");
+    }
   });
   try {
     if (window.speechSynthesis) {
@@ -1429,7 +1566,7 @@ function wire() {
 
   refreshAll();
   setInterval(refreshAll, 3000);
-  console.info("[ATC] UI wired (frontface1)");
+  console.info("[ATC] UI wired (session-panel1)");
 }
 
 if (document.readyState === "loading") {

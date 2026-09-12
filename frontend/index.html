@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta http-equiv="Cache-Control" content="no-store" />
   <title>AiRTraffic Control</title>
-  <link rel="stylesheet" href="/static/style.css?v=christopher1" />
+  <link rel="stylesheet" href="/static/style.css?v=session-panel1" />
 </head>
 <body>
   <div class="app">
@@ -35,6 +35,7 @@
         <span class="chip chip-danger">Kill <em>(confirm)</em></span>
         <span class="chip">Redirect</span>
         <span class="chip">Live logs</span>
+        <span class="chip chip-accent">Session panel</span>
         <span class="chip">Pause all / Resume all</span>
         <span class="chip chip-accent">Voice or text</span>
       </div>
@@ -102,18 +103,38 @@
         No workers in view. Turn off <em>Demo fleet only</em> to see God Mode PIDs, or start the server to spawn the demo fleet.
       </div>
 
-      <aside class="inspect-drawer" id="inspectDrawer" hidden>
-        <div class="inspect-head">
-          <div>
-            <div class="panel-label">Inspect</div>
-            <h3 id="inspectTitle">—</h3>
-          </div>
-          <button id="btnCloseInspect" class="link" type="button">Close</button>
-        </div>
-        <p class="inspect-summary" id="inspectSummary"></p>
-        <pre class="inspect-log" id="inspectLog"></pre>
-      </aside>
     </section>
+
+    <!-- Worker session slide-out (focus context for voice/text) -->
+    <div class="session-backdrop" id="sessionBackdrop" hidden></div>
+    <aside class="session-panel" id="sessionPanel" aria-hidden="true" role="dialog" aria-labelledby="sessionTitle">
+      <div class="session-panel-inner">
+        <header class="session-head">
+          <div class="session-head-main">
+            <div class="panel-label">Session</div>
+            <h2 id="sessionTitle">—</h2>
+            <div class="session-badges" id="sessionBadges"></div>
+          </div>
+          <button id="btnCloseSession" class="btn sm" type="button" aria-label="Close session panel">Close</button>
+        </header>
+        <div class="session-meta" id="sessionMeta"></div>
+        <div class="session-actions" id="sessionActions"></div>
+        <div class="session-live" id="sessionLive">
+          <div class="worker-live-head">
+            <span class="live-dot" id="sessionLiveDot" aria-hidden="true"></span>
+            <span id="sessionLiveTitle">Live</span>
+            <code class="wid" id="sessionLiveId"></code>
+          </div>
+          <div class="worker-live-meta" id="sessionLiveMeta" data-live-meta=""></div>
+          <pre class="worker-live-log session-live-log" id="sessionLiveLog" data-live-log="">Connecting…</pre>
+          <div class="steer-inline" id="sessionSteerWrap">
+            <input type="text" id="sessionSteerInput" placeholder="Steer prompt…" autocomplete="off" />
+            <button type="button" class="btn sm primary" id="btnSessionSteer">Send</button>
+          </div>
+        </div>
+        <p class="session-focus-hint">Voice &amp; text while open resolve to this worker when you say “it” / “this session”.</p>
+      </div>
+    </aside>
 
     <div class="split split-3">
       <section class="panel" id="towerHistoryPanel">
@@ -154,6 +175,6 @@
       </section>
     </div>
   </div>
-  <script src="/static/app.js?v=christopher1"></script>
+  <script src="/static/app.js?v=session-panel1"></script>
 </body>
 </html>
