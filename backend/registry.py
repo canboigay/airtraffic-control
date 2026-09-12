@@ -33,7 +33,7 @@ class Worker:
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     uptime_sec: int | None = None
     cmdline_short: str | None = None
-    source: str | None = None  # "demo" | "god"
+    source: str | None = None  # "demo" | "god" | "cli"
     session_tree: bool = False  # descendant of a live god/claude wrapper
 
     def snapshot(self) -> dict[str, Any]:
@@ -190,10 +190,11 @@ class Registry:
         return {"before": before, "after": worker.snapshot()}
 
     def pause_all(self, scope: str = "demo") -> dict[str, Any]:
-        """Pause workers. Default scope is demo-only — never fleet-pause God sessions.
+        """Pause workers. Default scope is demo-only — never fleet-pause God/CLI sessions.
 
         Skips protected god/claude wrappers and anyone under those session trees.
-        Explicit `pause <id>` still reaches a named god workload (not a wrapper).
+        Explicit `pause <id>` still reaches a named god/cli workload (not a wrapper).
+        Terminal Grok/Gemini CLI workers (source=cli) are excluded from demo/god fleet pause.
         """
         scope = _normalize_scope(scope)
         paused: list[dict[str, Any]] = []

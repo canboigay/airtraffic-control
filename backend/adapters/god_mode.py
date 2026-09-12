@@ -1,9 +1,10 @@
 """Local God Mode adapter — discover and control real user processes.
 
-Discovers Simeon's God Mode stack workloads (and optional ATC demo workers)
-and exposes pause (SIGSTOP) / resume (SIGCONT) / kill (TERM then KILL) /
-redirect (label + real god-rt quiet steer for God RT) / restart
-(resume-if-paused only for discovered PIDs).
+Discovers Simeon's God Mode stack workloads, optional ATC demo workers,
+and terminal Grok CLI / Gemini CLI sessions (source=cli), and exposes
+pause (SIGSTOP on the listed PID only) / resume (SIGCONT tree) /
+kill (TERM then KILL) / redirect (label + real god-rt quiet steer for God RT) /
+restart (resume-if-paused only for discovered PIDs).
 """
 
 from __future__ import annotations
@@ -47,6 +48,8 @@ SLUG_NAMES = {
     "log-spam": "Log Spam",
     "fake-build": "Fake Build",
     "fake-research": "Fake Research",
+    "grok-cli": "Grok CLI",
+    "gemini-cli": "Gemini CLI",
 }
 INTERPRETERS = {
     "python",
@@ -89,6 +92,7 @@ DENY_SUBSTR = (
     "cursor helper",
     "cursoruiviewservice",
     "grok bot",
+    "/applications/grok bot.app",
     "loginwindow",
 )
 DENY_PREFIXES = (
@@ -101,6 +105,12 @@ DENY_PREFIXES = (
 # Live TUI session wrappers (basename only). god-rt / god-watch / god_gate.py
 # are NOT these — they keep their own names.
 SESSION_WRAPPER_NAMES = frozenset({"god", "claude"})
+# Terminal AI CLIs (exact basename only — never ngrok/progrok/Grok Bot.app).
+CLI_BINS = frozenset({"grok", "gemini"})
+CLI_SLUGS = {
+    "grok": "grok-cli",
+    "gemini": "gemini-cli",
+}
 SCRIPT_EXTS = {".py", ".zsh", ".sh", ".js", ".mjs", ".ts", ".cjs", ""}
 
 
@@ -281,12 +291,58 @@ def _demo_hit(command: str) -> tuple[str, str] | None:
     return None
 
 
+def _cli_basename(name: str) -> str | None:
+    """Return grok/gemini if *name* is exactly that CLI (or gemini.js)."""
+    if not name:
+        return None
+    low = name.lower()
+    if low in CLI_BINS:
+        return low
+    stem = Path(low).stem
+    suffix = Path(low).suffix.lower()
+    if stem in CLI_BINS and suffix in {".js", ".mjs", ".cjs"}:
+        return stem
+    return None
+
+
+# argv0 is bare `grok`/`gemini`, or a path whose final segment is exactly that
+# (optional .js for node). Never matches ngrok/progrok or "Grok Bot.app"
+# (spaces in Mac GUI paths would otherwise shlex-split into a false `Grok`).
+_CLI_ARGV0_RE = re.compile(
+    r"(?i)^(?P<bin>(?:[^\s]*/)?(?:grok|gemini)(?:\.js|\.mjs|\.cjs)?)(?:\s|$)"
+)
+_CLI_NODE_RE = re.compile(
+    r"(?i)^(?:node|nodejs|python[\w.]*)\s+"
+    r"(?P<bin>(?:[^\s]*/)?(?:grok|gemini)(?:\.js|\.mjs|\.cjs)?)(?:\s|$)"
+)
+
+
+def _cli_hit(command: str) -> str | None:
+    """Return `grok` / `gemini` when argv0 (or node script) is that exact CLI."""
+    if _is_scanner(command):
+        return None
+    # GUI bundles / denylist first — do not tokenize spaced .app paths.
+    if is_denied_cmdline(command):
+        return None
+    low = command.strip()
+    if not low:
+        return None
+    if ".app/" in low.lower() or low.lower().endswith(".app"):
+        return None
+    m = _CLI_ARGV0_RE.match(low) or _CLI_NODE_RE.match(low)
+    if not m:
+        return None
+    return _cli_basename(Path(m.group("bin")).name)
+
+
 def classify_proc(proc: Proc, *, stack: str, include_demo: bool) -> bool:
     """Return True if this process is a controllable candidate (denylist not applied)."""
     if is_denied_cmdline(proc.command):
         return False
     if _is_scanner(proc.command):
         return False
+    if _cli_hit(proc.command):
+        return True
     if include_demo and _demo_hit(proc.command):
         return True
     if _keyword_hit(proc.command):
@@ -297,6 +353,9 @@ def classify_proc(proc: Proc, *, stack: str, include_demo: bool) -> bool:
 
 
 def slug_for(proc: Proc, *, stack: str) -> str:
+    cli = _cli_hit(proc.command)
+    if cli:
+        return CLI_SLUGS[cli]
     demo = _demo_hit(proc.command)
     if demo:
         return demo[0]
@@ -321,7 +380,15 @@ def human_name(slug: str, command: str, pid: int | None = None) -> str:
     m = re.search(r"--profile\s+(\S+)", command)
     if m:
         base = f"{base} ({m.group(1)})"
-    if pid is not None and slug in {"mcp-hands", "god-rt", "god-watch", "csuper", "campaign-harness"}:
+    if pid is not None and slug in {
+        "mcp-hands",
+        "god-rt",
+        "god-watch",
+        "csuper",
+        "campaign-harness",
+        "grok-cli",
+        "gemini-cli",
+    }:
         base = f"{base} · {pid}"
     return base
 
@@ -481,8 +548,9 @@ class GodModeAdapter:
         self._runner = _runner
         self._note = (
             "Live God Mode adapter. Discovers user processes under GOD_STACK "
-            "and named workloads (god-rt, campaign-harness, csuper, god-watch, mcp_hands). "
-            "Session wrappers (`…/god`, `claude` CLI) and Claude/Cursor/Grok GUI are denylisted. "
+            "and named workloads (god-rt, campaign-harness, csuper, god-watch, mcp_hands), "
+            "plus terminal Grok CLI / Gemini CLI (source=cli; exact basename match). "
+            "Session wrappers (`…/god`, `claude` CLI) and Claude/Cursor/Grok Bot GUI are denylisted. "
             "Redirect on God RT runs allowlisted quiet god-rt verbs (campaign_status/brief/list/ready/next/probe)."
         )
         self._last_steer: dict | None = None
@@ -526,15 +594,17 @@ class GodModeAdapter:
         session_tree = False
         if all_procs is not None:
             session_tree = ancestor_is_protected_session(proc, all_procs)
+        slug = slug_for(proc, stack=self.stack)
+        source = "cli" if slug in {"grok-cli", "gemini-cli"} else "god"
         return Worker(
             id=worker_id,
-            name=human_name(slug_for(proc, stack=self.stack), proc.command, proc.pid),
+            name=human_name(slug, proc.command, proc.pid),
             status=status,
             pid=proc.pid,
             target=target,
             detail=detail,
             updated_at=_now(),
-            source="god",
+            source=source,
             cmdline_short=cmd_short,
             uptime_sec=None,
             session_tree=session_tree,
@@ -667,14 +737,16 @@ class GodModeAdapter:
             except ProcessLookupError:
                 pass
             time.sleep(0.05)
+        slug = slug_for(proc, stack=self.stack)
         return Worker(
             id=wid,
-            name=human_name(slug_for(proc, stack=self.stack), proc.command, proc.pid),
+            name=human_name(slug, proc.command, proc.pid),
             status=WorkerStatus.KILLED,
             pid=None,
             target=lookup_target(load_targets(self.targets_path), wid, old_pid),
             detail=f"killed (was pid={old_pid})",
             updated_at=_now(),
+            source="cli" if slug in {"grok-cli", "gemini-cli"} else "god",
         )
 
     def pop_last_steer(self) -> dict | None:
@@ -785,7 +857,7 @@ class GodModeAdapter:
             return {
                 "worker_id": wid,
                 "worker": snap,
-                "source": "god",
+                "source": snap.get("source") or "god",
                 "log_path": str(chosen),
                 "lines": tailed,
                 "line_count": len(tailed),
@@ -799,7 +871,7 @@ class GodModeAdapter:
         return {
             "worker_id": wid,
             "worker": snap,
-            "source": "god",
+            "source": snap.get("source") or "god",
             "log_path": None,
             "lines": [],
             "line_count": 0,

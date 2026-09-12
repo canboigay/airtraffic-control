@@ -47,6 +47,14 @@ WORKER_ALIASES = {
     "mcp hands": "mcp-hands",
     "mcp-hands": "mcp-hands",
     "mcphands": "mcp-hands",
+    "grok cli": "grok-cli",
+    "grok-cli": "grok-cli",
+    "grokcli": "grok-cli",
+    "grok": "grok-cli",
+    "gemini cli": "gemini-cli",
+    "gemini-cli": "gemini-cli",
+    "geminicli": "gemini-cli",
+    "gemini": "gemini-cli",
 }
 
 FILLER = re.compile(

@@ -109,13 +109,26 @@ PYTHONPATH=. pytest -q
 
 Default adapter mode is **`ATC_ADAPTER=hybrid`**: the three demo workers stay available for the Speechmatics demo, and the live `GodModeAdapter` also lists user `simeong` processes from the God Mode stack (`GOD_STACK`, default `/Users/simeong/local-claude-offline-stack`).
 
-- `hybrid` (default) — demo workers + discovered stack processes (`god-rt`, `campaign-harness`, `csuper`, `god-watch`, `mcp_hands`, and python/zsh/node scripts under the stack)
+- `hybrid` (default) — demo workers + discovered stack processes (`god-rt`, `campaign-harness`, `csuper`, `god-watch`, `mcp_hands`, and python/zsh/node scripts under the stack) **plus** terminal **Grok CLI** / **Gemini CLI** sessions
 - `local` — discovery only; demo workers are **not** spawned
 - `demo` — the original three fake workers only
 
+### Terminal Grok CLI / Gemini CLI
+
+Live terminal sessions are discovered as workers with `source=cli` (not `god`):
+
+| Binary (exact basename) | Worker id / name |
+|-------------------------|------------------|
+| `grok` (e.g. `~/.local/bin/grok`, `~/.grok/bin/grok`, npm-global) | `grok-cli-<pid>` named **Grok CLI** with pid suffix |
+| `gemini` (e.g. `/opt/homebrew/bin/gemini`, npm-global, `/usr/local`, or `node …/gemini.js`) | `gemini-cli-<pid>` named **Gemini CLI** with pid suffix |
+
+Matching is **argv0 / basename exact** (`grok`, `gemini`) — it does **not** match `Grok Bot.app`, `grok bot`, `progrok`, or `ngrok`. Claude / Cursor / Grok Bot GUI stay on the discovery denylist.
+
+Policy: same as other non-wrapper discovered workers — list, `pause`/`resume`/`inspect`, and kill-with-confirm on the listed PID. `pause all` stays **demo-only** (CLI sessions are not fleet-paused). Pause is `SIGSTOP` on that PID only; resume still `SIGCONT`s the worker and its descendants.
+
 Protected processes are never listed or signalled: ATC's own uvicorn on `:8765`, anything listening on `:8088`/`:8089` (god proxy), Claude.app GUI/helpers, Cursor / Grok Bot agents, `loginwindow`, system daemons, and live TUI session wrappers (`zsh …/god`, `claude` CLI god sessions).
 
-`pause all` / `resume all` default to **demo workers only**. God Mode / claude session trees are excluded unless the supervisor says `pause god …` / `pause all god`. Pause of a discovered PID is a real `SIGSTOP` on that PID only (never the process group). Resume `SIGCONT`s the worker **and its descendants** so children are not left stopped. Restart respawns demo-owned workers only; for a discovered PID, restart resumes if paused or raises a clear error.
+`pause all` / `resume all` default to **demo workers only**. God Mode / claude session trees and terminal CLI workers (`source=cli`) are excluded unless the supervisor says `pause god …` / `pause all god` (god workloads) or names a CLI worker explicitly. Pause of a discovered PID is a real `SIGSTOP` on that PID only (never the process group). Resume `SIGCONT`s the worker **and its descendants** so children are not left stopped. Restart respawns demo-owned workers only; for a discovered PID, restart resumes if paused or raises a clear error.
 
 Kill still requires `confirm kill`. GUI denylist and god/claude TUI wrappers cannot be armed. Demo and mcp-hands kills need an explicit worker id plus the confirm phrase.
 
