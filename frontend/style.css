@@ -820,12 +820,12 @@ h3 {
 .live-dot.idle { background: #64d2ff; box-shadow: 0 0 8px rgba(100, 210, 255, 0.7); animation: none; }
 .live-dot.stale { background: #ff9f0a; box-shadow: 0 0 8px rgba(255, 159, 10, 0.7); animation: none; }
 
-/* —— Session slide-out panel —— */
+/* —— Session top drop-down sheet —— */
 .session-backdrop {
   position: fixed;
   inset: 0;
   z-index: 80;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.5);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.28s ease;
@@ -839,22 +839,24 @@ h3 {
 .session-panel {
   position: fixed;
   top: 0;
-  right: 0;
+  left: 50%;
   z-index: 90;
-  width: min(420px, 100vw);
-  height: 100vh;
-  height: 100dvh;
+  width: min(960px, calc(100vw - 24px));
+  height: min(92vh, 92dvh);
+  max-height: 92dvh;
   background: var(--surface);
-  border-left: 1px solid rgba(10, 132, 255, 0.28);
-  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.45);
-  transform: translateX(105%);
-  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  border: 1px solid rgba(10, 132, 255, 0.28);
+  border-top: none;
+  border-radius: 0 0 18px 18px;
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.55);
+  transform: translate(-50%, -108%);
+  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
   display: flex;
   flex-direction: column;
   pointer-events: none;
 }
 .session-panel.open {
-  transform: translateX(0);
+  transform: translate(-50%, 0);
   pointer-events: auto;
 }
 .session-panel-inner {
@@ -862,19 +864,36 @@ h3 {
   flex-direction: column;
   gap: 12px;
   height: 100%;
-  padding: 18px 16px 20px;
-  overflow: auto;
+  min-height: 0;
+  padding: 8px 20px 18px;
+  overflow: hidden;
+}
+.session-sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  margin: 4px auto 6px;
+  flex-shrink: 0;
 }
 .session-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  flex-shrink: 0;
 }
 .session-head-main { min-width: 0; flex: 1; }
+.session-head .btn {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 14px;
+  min-height: 40px;
+  flex-shrink: 0;
+}
 .session-head h2 {
   margin: 2px 0 6px;
-  font-size: 18px;
+  font-size: 20px;
   letter-spacing: -0.03em;
   word-break: break-word;
 }
@@ -885,15 +904,16 @@ h3 {
 }
 .session-meta {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--tertiary);
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 10px;
-  padding: 8px 10px;
+  gap: 6px 12px;
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.28);
   border: 1px solid var(--hairline);
+  flex-shrink: 0;
 }
 .session-meta code {
   font-family: inherit;
@@ -902,28 +922,62 @@ h3 {
 .session-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.session-actions .btn {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 14px;
+  min-height: 40px;
 }
 .session-live {
-  flex: 1;
-  min-height: 200px;
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: rgba(0, 0, 0, 0.35);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
 }
+.session-live .worker-live-head {
+  flex-shrink: 0;
+}
+.session-live .worker-live-meta {
+  flex-shrink: 0;
+  font-size: 12px;
+}
 .session-live-log {
-  flex: 1;
+  flex: 1 1 auto;
   max-height: none !important;
-  min-height: 180px;
+  min-height: 220px;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px 14px;
+}
+.session-live .steer-inline {
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+.session-live .steer-inline input {
+  font-size: 14px;
+  padding: 10px 12px;
+  min-height: 42px;
+  border-radius: 10px;
+}
+.session-live .steer-inline .btn {
+  font-size: 13px;
+  padding: 10px 16px;
+  min-height: 42px;
 }
 .session-focus-hint {
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--tertiary);
   line-height: 1.4;
+  flex-shrink: 0;
 }
 
 .fleet-panel.has-session-focus .workers-list {
@@ -939,12 +993,27 @@ h3 {
   color: #fff;
 }
 
-@media (max-width: 560px) {
+@media (max-width: 720px) {
   .session-panel {
     width: 100vw;
+    height: min(94vh, 94dvh);
+    max-height: 94dvh;
+    left: 0;
+    transform: translateY(-108%);
+    border-radius: 0 0 14px 14px;
+    border-left: none;
+    border-right: none;
+  }
+  .session-panel.open {
+    transform: translateY(0);
   }
   .session-panel-inner {
-    padding: 14px 12px 18px;
+    padding: 6px 14px 16px;
+  }
+  .session-head h2 { font-size: 18px; }
+  .session-live-log {
+    min-height: 180px;
+    font-size: 12.5px;
   }
 }
 

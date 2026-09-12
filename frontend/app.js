@@ -74,7 +74,7 @@ const liveLogScroll = {}; // id -> stickToBottom
 /** After UI/voice steer: follow live transcript in expand pane. id -> {until, prompt, lines} */
 const steerFollow = {};
 const expandedWorkerIds = new Set(JSON.parse(localStorage.getItem("atcExpandedWorkers") || "[]"));
-/** Currently focused worker in the slide-out session panel (voice/text anaphora). */
+/** Currently focused worker in the session sheet (voice/text anaphora). */
 let selectedWorkerId = null;
 let lastWorkers = [];
 
@@ -945,7 +945,7 @@ function updateWorkerRow(row, w) {
 
   syncRedirectInline(row, w);
 
-  // Live transcript + steer live in the slide-out session panel (not inline).
+  // Live transcript + steer live in the session sheet (not inline).
   const live = row.querySelector(".worker-live");
   if (live) live.remove();
 }
@@ -1566,7 +1566,7 @@ function wire() {
 
   refreshAll();
   setInterval(refreshAll, 3000);
-  console.info("[ATC] UI wired (session-panel1)");
+  console.info("[ATC] UI wired (session-sheet1)");
 }
 
 if (document.readyState === "loading") {

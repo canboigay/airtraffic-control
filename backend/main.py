@@ -338,7 +338,7 @@ def clear_memory() -> dict[str, Any]:
 
 @app.post("/api/focus")
 def set_focus(body: FocusRequest) -> dict[str, Any]:
-    """Set tower UI focus (slide-out worker panel) for voice/text anaphora."""
+    """Set tower UI focus (session sheet) for voice/text anaphora."""
     tower_memory.set_focus(body.worker_id)
     return {"ok": True, "focus_worker_id": tower_memory.focus_worker_id()}
 

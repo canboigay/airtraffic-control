@@ -35,7 +35,7 @@ Do NOT request engage, exploit, GO, or loud promote from ATC.
 
 Anaphora: use Recent dialogue below. "pause it" / "do that again" / "what did you mean"
 refer to the last worker/action/reply. Prefer the remembered worker_id when pronouns appear.
-If UI focus (slide-out panel) is set, prefer that worker for unambiguous "it" / "this session"
+If UI focus (session sheet) is set, prefer that worker for unambiguous "it" / "this session"
 commands (what's it doing, pause it, steer it to …).
 
 Kill safety: call kill_worker first (arms), then confirm_kill only after they clearly confirm.

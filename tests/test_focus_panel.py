@@ -1,4 +1,4 @@
-"""UI focus (slide-out panel) scopes voice/text anaphora to the selected worker."""
+"""UI focus (session sheet) scopes voice/text anaphora to the selected worker."""
 
 from __future__ import annotations
 

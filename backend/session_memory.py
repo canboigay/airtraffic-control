@@ -39,7 +39,7 @@ class SessionMemory:
     def __init__(self, maxlen: int = 12) -> None:
         self._lock = Lock()
         self._turns: deque[Turn] = deque(maxlen=max(2, int(maxlen)))
-        # UI slide-out panel focus — preferred anaphora target while open
+        # UI session-sheet focus — preferred anaphora target while open
         self._focus_worker_id: str | None = None
 
     def clear(self) -> None:
@@ -151,7 +151,7 @@ class SessionMemory:
         la = self.last_action()
         if focus:
             lines.append(
-                f"UI focus (slide-out panel open): worker={focus}. "
+                f"UI focus (session sheet open): worker={focus}. "
                 "When the utterance is unambiguous about 'it'/that/this session "
                 "(pause it, what's it doing, steer it to …), resolve to this focus worker."
             )

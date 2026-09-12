@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta http-equiv="Cache-Control" content="no-store" />
   <title>AiRTraffic Control</title>
-  <link rel="stylesheet" href="/static/style.css?v=session-panel1" />
+  <link rel="stylesheet" href="/static/style.css?v=session-sheet1" />
 </head>
 <body>
   <div class="app">
@@ -35,7 +35,7 @@
         <span class="chip chip-danger">Kill <em>(confirm)</em></span>
         <span class="chip">Redirect</span>
         <span class="chip">Live logs</span>
-        <span class="chip chip-accent">Session panel</span>
+        <span class="chip chip-accent">Session sheet</span>
         <span class="chip">Pause all / Resume all</span>
         <span class="chip chip-accent">Voice or text</span>
       </div>
@@ -105,10 +105,11 @@
 
     </section>
 
-    <!-- Worker session slide-out (focus context for voice/text) -->
+    <!-- Worker session top sheet (focus context for voice/text) -->
     <div class="session-backdrop" id="sessionBackdrop" hidden></div>
     <aside class="session-panel" id="sessionPanel" aria-hidden="true" role="dialog" aria-labelledby="sessionTitle">
       <div class="session-panel-inner">
+        <div class="session-sheet-handle" aria-hidden="true"></div>
         <header class="session-head">
           <div class="session-head-main">
             <div class="panel-label">Session</div>
@@ -175,6 +176,6 @@
       </section>
     </div>
   </div>
-  <script src="/static/app.js?v=session-panel1"></script>
+  <script src="/static/app.js?v=session-sheet1"></script>
 </body>
 </html>
