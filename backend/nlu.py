@@ -24,13 +24,13 @@ DEEPSEEK_MODEL = os.environ.get("ATC_DEEPSEEK_MODEL", "deepseek-chat")
 SYSTEM = """You map voice tower utterances to ONE JSON object. No markdown.
 
 Allowed actions only:
-status | pause | resume | kill | confirm_kill | redirect | clarify | pause_all | resume_all | unknown
+status | pause | resume | kill | confirm_kill | redirect | clarify | pause_all | resume_all | session | unknown
 
 Workers: use any worker id/name the supervisor says (demo: log-spam, fake-build, fake-research;
 discovered: mcp-hands-<pid>, god-rt-<pid>, etc.). Prefer the exact id when known.
 
 Schema:
-{"action":"status|pause|resume|kill|confirm_kill|redirect|pause_all|resume_all|unknown","worker_id":null|"string","target":null|"string"}
+{"action":"status|pause|resume|kill|confirm_kill|redirect|pause_all|resume_all|session|unknown","worker_id":null|"string","target":null|"string"}
 
 Understand any phrasing, slang, or indirect ask.
 confirm/yes/yep/do it/go ahead/affirmative → confirm_kill
@@ -42,6 +42,7 @@ resume/continue/unpause → resume (needs worker)
 kill/terminate/murder/shut down → kill (needs worker)
 redirect/send/point/steer … to/at → redirect (needs worker + target; God RT quiet verbs: campaign_status, brief, list, ready, next, probe)
 what did you mean / clarify → clarify
+which terminal / what session / where is X → session (needs worker)
 If the ask is outside this control surface (e.g. make coffee) → unknown with null worker_id.
 """
 
@@ -64,7 +65,7 @@ def _extract_json(text: str) -> dict[str, Any] | None:
 
 def _from_dict(data: dict[str, Any], raw: str) -> ParsedCommand:
     action = str(data.get("action") or "unknown").strip().lower()
-    if action not in {"status", "pause", "resume", "kill", "confirm_kill", "redirect", "clarify", "pause_all", "resume_all", "unknown"}:
+    if action not in {"status", "pause", "resume", "kill", "confirm_kill", "redirect", "clarify", "pause_all", "resume_all", "session", "unknown"}:
         action = "unknown"
     wid = data.get("worker_id")
     if wid is not None:

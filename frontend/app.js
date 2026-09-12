@@ -645,6 +645,12 @@ function workerMetaHtml(w) {
   ];
   if (up) bits.push(`<span>up ${escapeHtml(up)}</span>`);
   if (w.source) bits.push(`<span>${escapeHtml(w.source)}</span>`);
+  if (w.session_hint) {
+    bits.push(`<span class="session-hint" title="Terminal / session">${escapeHtml(w.session_hint)}</span>`);
+  } else if (w.session_tty || w.session_app) {
+    const parts = [w.session_tty, w.session_app].filter(Boolean);
+    bits.push(`<span class="session-hint" title="Terminal / session">${escapeHtml(parts.join(" · "))}</span>`);
+  }
   return bits.join("");
 }
 

@@ -170,6 +170,32 @@ Voice (`/api/command`) and text (`/api/command/text`) share a short rolling sess
 
 `GET /api/memory` · `POST /api/memory/clear`
 
+
+
+## Session / terminal insight
+
+Discovered workers (God Mode + CLI) are enriched **read-only** with terminal/session metadata:
+
+| Field | Meaning |
+|-------|---------|
+| `session_tty` | TTY device (`ttys003`, …) from `ps` |
+| `session_app` | Parent-chain hint: `Terminal.app` / `iTerm` / `Claude.app` / `god launcher` / … |
+| `session_id` | Claude CLI `--resume <uuid>` when present on the process or an ancestor cmdline |
+| `session_cwd` | CWD when cheap (`lsof -d cwd` batched for listed PIDs only) |
+| `session_hint` | Short card label, e.g. `ttys000 · Terminal.app` |
+
+Demo workers get `session_hint=ATC demo`. Discovery still never signals processes.
+
+### Voice / text examples
+
+| Say | Example spoken reply |
+|-----|----------------------|
+| `which terminal is mcp-hands in?` | MCP Hands is on ttys000 in Terminal.app. |
+| `what session is god-rt in?` | God RT is on ttys004 in Terminal.app. |
+| `where is fake-build running?` | Fake Build is an ATC demo worker (no terminal). |
+
+Fast path + `worker_session` agent tool both answer from the same fields. Worker cards show the session hint next to source/PID.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

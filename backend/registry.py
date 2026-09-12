@@ -35,6 +35,11 @@ class Worker:
     cmdline_short: str | None = None
     source: str | None = None  # "demo" | "god" | "cli"
     session_tree: bool = False  # descendant of a live god/claude wrapper
+    session_tty: str | None = None
+    session_app: str | None = None
+    session_id: str | None = None  # Claude --resume UUID when present
+    session_cwd: str | None = None
+    session_hint: str | None = None  # short card label
 
     def snapshot(self) -> dict[str, Any]:
         d = asdict(self)

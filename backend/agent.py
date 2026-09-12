@@ -50,6 +50,7 @@ Never fleet-pause live god/claude session wrappers. Say "pause god-rt" or
 "pause all god" only when the supervisor explicitly wants God workloads.
 Kill of god/claude TUI wrappers is refused; demo and mcp-hands still need confirm kill.
 Inspect: inspect_worker for log tails (summarize, don't dump).
+Session/where: worker_session for which terminal / what session / where is X running (tty, Terminal.app/iTerm/Claude.app/god launcher, Claude --resume id).
 Steer: "{Name} steered to {verb}. {short summary}."
 """
 
@@ -61,8 +62,10 @@ def _fleet_block(workers: list[dict[str, Any]]) -> str:
     for w in workers:
         pid = w.get("pid") if w.get("pid") is not None else "—"
         tgt = w.get("target") or "—"
+        sess = w.get("session_hint") or ""
+        extra = f" session={sess}" if sess else ""
         lines.append(
-            f"- {w.get('id')} — {w.get('name')} status={w.get('status')} pid={pid} target={tgt}"
+            f"- {w.get('id')} — {w.get('name')} status={w.get('status')} pid={pid} target={tgt}{extra}"
         )
     return "\n".join(lines)
 
@@ -245,6 +248,24 @@ TOOLS = [
                         "description": "demo (default) = fake workers only. god = discovered workloads. all = both.",
                     }
                 },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "worker_session",
+            "description": "Where a worker is running: tty/terminal device, parent app (Terminal.app / iTerm / Claude.app / god launcher), Claude --resume UUID, cwd, session hint. Use for which terminal / what session / where is X.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "worker_id": {
+                        "type": "string",
+                        "description": "Worker id or name from the current fleet list.",
+                    }
+                },
+                "required": ["worker_id"],
                 "additionalProperties": False,
             },
         },
@@ -443,6 +464,33 @@ def _exec_tool(
         )
         return {"ok": True, "action": "resume_all", "result": result}
 
+    if name == "worker_session":
+        from backend.session_insight import spoken_session_answer
+
+        wid = args["worker_id"]
+        snap = registry.get(wid)
+        if not snap:
+            return {"ok": False, "action": "session", "error": f"unknown worker: {wid}"}
+        resolved = snap.get("id") or wid
+        summary = spoken_session_answer(snap)
+        result = {
+            "worker_id": resolved,
+            "worker": snap,
+            "session_tty": snap.get("session_tty"),
+            "session_app": snap.get("session_app"),
+            "session_id": snap.get("session_id"),
+            "session_cwd": snap.get("session_cwd"),
+            "session_hint": snap.get("session_hint"),
+            "summary": summary,
+        }
+        audit_log.record(
+            "session",
+            worker_id=resolved,
+            detail={"summary": summary, "transcript": heard},
+            source=source,
+        )
+        return {"ok": True, "action": "session", "result": result}
+
     if name == "audit_tail":
         limit = int(args.get("limit") or 12)
         entries = audit_log.list(limit)
@@ -560,6 +608,14 @@ def _spoken_from_tool(payload: dict[str, Any]) -> str:
     if action == "resume_all":
         n = int(result.get("resumed_count") or 0)
         return f"Resumed {n} workers."
+    if action == "session":
+        summary = result.get("summary")
+        if summary:
+            return sanitize_spoken(str(summary), max_words=28)
+        from backend.session_insight import spoken_session_answer
+
+        w = result.get("worker") or {}
+        return sanitize_spoken(spoken_session_answer(w), max_words=28)
     if action == "inspect":
         summary = result.get("summary") or "No log activity."
         # Prefer a short speakable form
@@ -647,7 +703,7 @@ def _fast_fleet_action(
 
     action = cmd.action
     wid = cmd.worker_id
-    if action in {"pause", "resume", "kill", "redirect", "inspect"}:
+    if action in {"pause", "resume", "kill", "redirect", "inspect", "session"}:
         # Prefer live fleet match (covers mcp-hands etc.) then rule alias / memory
         live = _match_worker_in_text(heard, fleet)
         if live:
@@ -683,6 +739,8 @@ def _fast_fleet_action(
         tool, args = "resume_all", {"scope": cmd.scope or "demo"}
     elif action == "inspect":
         tool, args = "inspect_worker", {"worker_id": wid, "lines": int(cmd.lines or 20)}
+    elif action == "session":
+        tool, args = "worker_session", {"worker_id": wid}
     else:
         return None
     try:

@@ -153,6 +153,29 @@ def parse_command(transcript: str) -> ParsedCommand | None:
     ):
         return ParsedCommand(action="resume_all", raw=raw, scope="demo")
 
+    # where / which terminal / what session is X
+    # e.g. "which terminal is mcp-hands in?", "what session is god-rt?", "where is fake-build running?"
+    if (
+        re.search(r"\bwhich\s+terminal\b", text)
+        or re.search(r"\bwhat\s+session\b", text)
+        or re.search(r"\bwhere(?:\s+s|\s+is)\b", text)  # where's → where s after normalize
+        or re.search(r"\bwhere\s+is\b", text)
+        or re.search(r"\bwhich\s+session\b", text)
+        or re.search(r"\bwhat\s+terminal\b", text)
+        or (text.startswith("where ") and _find_worker(text))
+    ):
+        wid = _find_worker(text)
+        if wid:
+            return ParsedCommand(action="session", worker_id=wid, raw=raw)
+        if _IT.search(text):
+            return ParsedCommand(
+                action="session",
+                worker_id=None,
+                raw=raw,
+                from_memory=True,
+                memory_ref="it",
+            )
+
     # inspect / tail / what's X doing / status of X logs
     inspect_hit = False
     wid = None

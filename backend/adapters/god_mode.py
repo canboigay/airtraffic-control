@@ -133,6 +133,7 @@ class Proc:
     state: str
     command: str
     user: str = DEFAULT_USER
+    tty: str = "?"
 
     @property
     def stopped(self) -> bool:
@@ -435,7 +436,7 @@ def assign_ids(procs: list[Proc], *, stack: str) -> list[tuple[str, Proc]]:
 def read_processes(user: str = DEFAULT_USER) -> list[Proc]:
     try:
         out = subprocess.check_output(
-            ["ps", "-u", user, "-axo", "pid=,ppid=,state=,user=,command="],
+            ["ps", "-u", user, "-axo", "pid=,ppid=,tty=,state=,user=,command="],
             text=True,
             stderr=subprocess.DEVNULL,
         )
@@ -446,16 +447,24 @@ def read_processes(user: str = DEFAULT_USER) -> list[Proc]:
         line = line.strip()
         if not line:
             continue
-        parts = line.split(None, 4)
-        if len(parts) < 5:
-            continue
-        pid_s, ppid_s, state, user_s, command = parts
+        parts = line.split(None, 5)
+        if len(parts) < 6:
+            # Fallback if tty column missing (older parse)
+            parts5 = line.split(None, 4)
+            if len(parts5) < 5:
+                continue
+            pid_s, ppid_s, state, user_s, command = parts5
+            tty_s = "?"
+        else:
+            pid_s, ppid_s, tty_s, state, user_s, command = parts
         try:
             pid = int(pid_s)
             ppid = int(ppid_s)
         except ValueError:
             continue
-        procs.append(Proc(pid=pid, ppid=ppid, state=state, command=command, user=user_s))
+        procs.append(
+            Proc(pid=pid, ppid=ppid, state=state, command=command, user=user_s, tty=tty_s)
+        )
     return procs
 
 
@@ -550,6 +559,8 @@ class GodModeAdapter:
             "Live God Mode adapter. Discovers user processes under GOD_STACK "
             "and named workloads (god-rt, campaign-harness, csuper, god-watch, mcp_hands), "
             "plus terminal Grok CLI / Gemini CLI (source=cli; exact basename match). "
+            "Enriches each worker with session_tty / session_app / session_id / session_hint "
+            "(tty + parent Terminal.app/iTerm/Claude.app/god launcher + Claude --resume). "
             "Session wrappers (`…/god`, `claude` CLI) and Claude/Cursor/Grok Bot GUI are denylisted. "
             "Redirect on God RT runs allowlisted quiet god-rt verbs (campaign_status/brief/list/ready/next/probe)."
         )
@@ -582,7 +593,11 @@ class GodModeAdapter:
         proc: Proc,
         targets: dict[str, str] | None = None,
         all_procs: list[Proc] | None = None,
+        cwd_map: dict[int, str] | None = None,
+        by_pid: dict[int, Proc] | None = None,
     ) -> Worker:
+        from backend.session_insight import enrich_session
+
         targets = targets if targets is not None else load_targets(self.targets_path)
         status = WorkerStatus.PAUSED if proc.stopped else WorkerStatus.RUNNING
         target = lookup_target(targets, worker_id, proc.pid)
@@ -596,6 +611,17 @@ class GodModeAdapter:
             session_tree = ancestor_is_protected_session(proc, all_procs)
         slug = slug_for(proc, stack=self.stack)
         source = "cli" if slug in {"grok-cli", "gemini-cli"} else "god"
+        bp = by_pid
+        if bp is None and all_procs is not None:
+            bp = {p.pid: p for p in all_procs}
+        sess = enrich_session(
+            pid=proc.pid,
+            ppid=proc.ppid,
+            tty=proc.tty,
+            command=proc.command,
+            by_pid=bp or {},
+            cwd_map=cwd_map,
+        )
         return Worker(
             id=worker_id,
             name=human_name(slug, proc.command, proc.pid),
@@ -608,10 +634,17 @@ class GodModeAdapter:
             cmdline_short=cmd_short,
             uptime_sec=None,
             session_tree=session_tree,
+            session_tty=sess.tty,
+            session_app=sess.app,
+            session_id=sess.session_id,
+            session_cwd=sess.cwd,
+            session_hint=sess.hint,
         )
 
     def list_workers(self) -> list[Worker]:
         """Read-only discovery — never signals or changes process state."""
+        from backend.session_insight import read_cwds_cheap
+
         procs = self._snapshot_procs()
         targets = load_targets(self.targets_path)
         selected = select_workers(
@@ -620,9 +653,14 @@ class GodModeAdapter:
             include_demo=self.include_demo,
             stack=self.stack,
         )
+        assigned = assign_ids(selected, stack=self.stack)
+        by_pid = {p.pid: p for p in procs}
+        cwd_map = read_cwds_cheap(p.pid for _, p in assigned)
         return [
-            self._to_worker(wid, proc, targets, all_procs=procs)
-            for wid, proc in assign_ids(selected, stack=self.stack)
+            self._to_worker(
+                wid, proc, targets, all_procs=procs, cwd_map=cwd_map, by_pid=by_pid
+            )
+            for wid, proc in assigned
         ]
 
     def _require(self, worker_id: str) -> str:
@@ -684,7 +722,7 @@ class GodModeAdapter:
         except PermissionError as e:
             raise PermissionError(f"cannot pause {wid} (pid={proc.pid}): {e}") from e
         state = proc_state(proc.pid, self.user) or "T"
-        refreshed = Proc(proc.pid, proc.ppid, state, proc.command, proc.user)
+        refreshed = Proc(proc.pid, proc.ppid, state, proc.command, proc.user, proc.tty)
         worker = self._to_worker(wid, refreshed)
         worker.status = WorkerStatus.PAUSED
         worker.detail = f"paused via SIGSTOP (was {proc.command[:80]})"
@@ -712,7 +750,7 @@ class GodModeAdapter:
             raise RuntimeError(f"{wid} is gone (pid={proc.pid})")
         time.sleep(0.05)
         state = proc_state(proc.pid, self.user) or "S"
-        refreshed = Proc(proc.pid, proc.ppid, state, proc.command, proc.user)
+        refreshed = Proc(proc.pid, proc.ppid, state, proc.command, proc.user, proc.tty)
         worker = self._to_worker(wid, refreshed)
         worker.status = WorkerStatus.RUNNING
         worker.detail = "resumed via SIGCONT"

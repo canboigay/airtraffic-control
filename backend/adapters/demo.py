@@ -70,6 +70,10 @@ class DemoAdapter:
         worker.source = "demo"
         worker.cmdline_short = self._cmdline_short(worker_id)
         worker.uptime_sec = self._uptime(worker_id) if worker.status != WorkerStatus.KILLED else None
+        worker.session_app = "ATC demo"
+        worker.session_hint = "ATC demo"
+        worker.session_tty = None
+        worker.session_id = None
         # Keep detail useful for UI tooltip
         if not worker.detail or worker.detail.startswith("script="):
             bits = [worker.cmdline_short]
