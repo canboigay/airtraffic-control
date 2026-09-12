@@ -86,8 +86,9 @@ def test_denylist_cmdlines():
     assert is_denied_cmdline(UVICORN.command)
     assert is_denied_cmdline(CURSOR.command)
     assert is_denied_cmdline(LOGIN.command)
-    assert is_denied_cmdline(GOD_LAUNCHER.command)
-    assert is_denied_cmdline(CLAUDE_CLI.command)
+    # god/claude TUI wrappers are shown as protected sessions — not on the GUI denylist
+    assert not is_denied_cmdline(GOD_LAUNCHER.command)
+    assert not is_denied_cmdline(CLAUDE_CLI.command)
     assert is_god_session_wrapper(GOD_LAUNCHER.command)
     assert is_god_session_wrapper(CLAUDE_CLI.command)
     assert not is_god_session_wrapper(GOD_RT.command)
@@ -114,8 +115,8 @@ def test_select_keeps_leaf_mcp_and_stack_workloads():
     assert 400 not in pids
     assert 401 not in pids
     assert 402 not in pids
-    assert 25189 not in pids  # zsh …/god wrapper
-    assert 25362 not in pids  # claude CLI session
+    assert 25189 in pids  # zsh …/god shown as protected session
+    assert 25362 in pids  # claude CLI shown as protected session
     assert 25668 in pids  # mcp-hands under session is listed but fleet-pause skipped
 
 
@@ -274,8 +275,11 @@ def test_live_adapter_lists_without_requiring_demo():
         assert "uvicorn" not in (w.detail or "").lower()
         assert "Claude.app" not in (w.detail or "")
         cmd = w.cmdline_short or w.detail or ""
-        assert not is_god_session_wrapper(cmd)
+        # GUI denylist never listed; god/claude wrappers may be listed as protected
         assert is_denied_cmdline(cmd) is False
+        if is_god_session_wrapper(cmd):
+            assert w.protected is True
+            assert w.source == "session"
 
 
 def test_session_tree_and_descendants():
@@ -302,7 +306,11 @@ def test_list_workers_does_not_signal(monkeypatch):
     workers = adapter.list_workers()
     ids = {w.id for w in workers}
     assert "god-rt-12345" in ids
-    assert not any(w.id.startswith("god-25189") or "claude" in w.id for w in workers)
+    assert "god-session-25189" in ids
+    assert "claude-session-25362" in ids
+    by = {w.id: w for w in workers}
+    assert by["god-session-25189"].protected is True
+    assert by["claude-session-25362"].protected is True
     under = [w for w in workers if w.pid == 25668]
     assert under and under[0].session_tree is True
     assert calls == []

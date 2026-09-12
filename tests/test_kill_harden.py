@@ -116,17 +116,23 @@ def test_adapter_kill_mcp_signals_only_mcp_pids(monkeypatch, tmp_path):
     assert 835 not in pids
 
 
-def test_adapter_refuses_signal_injected_wrapper(monkeypatch, tmp_path):
+def test_adapter_lists_wrapper_protected_explicit_kill_self_only(monkeypatch, tmp_path):
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
-    # Force-list a wrapper via _listed bypass: kill via _guard on crafted get
+    monkeypatch.setattr("backend.adapters.god_mode.pid_exists", lambda pid: False)
+    child = _proc(901, "claude --resume 146e90ce-078b-4f95-9200-1a4d52322c0c", ppid=900)
     adapter = GodModeAdapter(
         stack=STACK,
         include_demo=False,
-        _procs=[_proc(900, f"zsh {STACK}/god")],
+        _procs=[_proc(900, f"zsh {STACK}/god"), child],
         _deny_pids=set(),
         targets_path=tmp_path / "t.json",
     )
-    with pytest.raises(KeyError):
-        adapter.kill("900")
-    assert sent == []
+    workers = {w.id: w for w in adapter.list_workers()}
+    assert "god-session-900" in workers
+    assert workers["god-session-900"].protected is True
+    assert workers["god-session-900"].session_hint
+    w = adapter.kill("god-session-900")
+    assert w.status.value == "killed"
+    pids = {p for p, _ in sent}
+    assert pids == {900}  # never collateral into claude child

@@ -33,13 +33,14 @@ class Worker:
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     uptime_sec: int | None = None
     cmdline_short: str | None = None
-    source: str | None = None  # "demo" | "god" | "cli"
+    source: str | None = None  # "demo" | "god" | "cli" | "session"
     session_tree: bool = False  # descendant of a live god/claude wrapper
     session_tty: str | None = None
     session_app: str | None = None
     session_id: str | None = None  # Claude --resume UUID when present
     session_cwd: str | None = None
     session_hint: str | None = None  # short card label
+    protected: bool = False  # god/claude session: listed read-only unless explicit id/PID
 
     def snapshot(self) -> dict[str, Any]:
         d = asdict(self)
@@ -79,7 +80,9 @@ def _scope_includes(scope: str, source: str) -> bool:
 
 
 def _is_protected_worker(w: dict[str, Any]) -> bool:
-    """GUI denylist + god/claude TUI wrappers. Do not use human name (false +)."""
+    """Protected god/claude sessions + GUI denylist. Prefer explicit flag."""
+    if w.get("protected"):
+        return True
     try:
         from backend.adapters.god_mode import is_denied_cmdline, is_god_session_wrapper
     except Exception:
@@ -90,6 +93,24 @@ def _is_protected_worker(w: dict[str, Any]) -> bool:
         text = str(blob)
         if is_god_session_wrapper(text) or is_denied_cmdline(text):
             return True
+    return False
+
+
+def _is_explicit_session_ref(requested: str, worker: dict[str, Any]) -> bool:
+    """True when operator named the exact worker id or PID (not bare god/claude)."""
+    raw = (requested or "").strip()
+    if not raw:
+        return False
+    wid = str(worker.get("id") or "")
+    if raw == wid or raw.lower() == wid.lower():
+        return True
+    pid = worker.get("pid")
+    if pid is not None and raw == str(pid):
+        return True
+    # bare god/claude never counts as explicit
+    compact = "".join(ch for ch in raw.lower() if ch.isalnum())
+    if compact in BARE_SESSION_NAMES:
+        return False
     return False
 
 
@@ -182,9 +203,10 @@ class Registry:
 
     def pause(self, worker_id: str) -> dict[str, Any]:
         before = self.get(worker_id)
-        if before and _is_protected_worker(before):
+        if before and _is_protected_worker(before) and not _is_explicit_session_ref(worker_id, before):
             raise PermissionError(
-                f"refusing to pause protected god/claude session {before.get('id')}"
+                f"refusing to pause protected god/claude session {before.get('id')} "
+                f"— name the exact id or PID"
             )
         worker = self.adapter.pause(worker_id)
         return {"before": before, "after": worker.snapshot()}
@@ -283,18 +305,20 @@ class Registry:
 
     def request_kill(self, worker_id: str) -> dict[str, Any]:
         """Arm kill; requires spoken confirm phrase before execute_kill."""
+        # Bare god/claude never arms — require pid-qualified id up front.
+        if _kill_needs_explicit_id(worker_id, {}):
+            raise PermissionError(
+                f"kill of god/claude session requires an explicit id "
+                f"(e.g. god-session-<pid> or claude-session-<pid>), not {worker_id!r}"
+            )
         wid = self.resolve_id(worker_id) or worker_id
         before = self.get(wid)
         if not before:
             raise KeyError(f"unknown worker: {worker_id}")
-        if _is_protected_worker(before):
+        if _is_protected_worker(before) and not _is_explicit_session_ref(worker_id, before):
             raise PermissionError(
-                f"refusing to kill protected god/claude session {wid}"
-            )
-        if _kill_needs_explicit_id(worker_id, before):
-            raise PermissionError(
-                f"kill of god/claude session requires an explicit id "
-                f"(e.g. {before.get('id')}), not {worker_id!r}"
+                f"refusing to kill protected god/claude session {wid} "
+                f"— name the exact id or PID"
             )
         with self._lock:
             self._pending_kills[wid] = datetime.now(timezone.utc).isoformat()
@@ -320,10 +344,19 @@ class Registry:
                 )
             del self._pending_kills[wid]
         before = self.get(wid)
+        # Confirm path uses armed resolved id (explicit). Still block GUI denylist.
         if before and _is_protected_worker(before):
-            raise PermissionError(
-                f"refusing to kill protected god/claude session {wid}"
-            )
+            try:
+                from backend.adapters.god_mode import is_denied_cmdline, is_god_session_wrapper
+            except Exception:
+                is_denied_cmdline = lambda c: False  # type: ignore
+                is_god_session_wrapper = lambda c: False  # type: ignore
+            blob = str(before.get("cmdline_short") or before.get("detail") or "")
+            # Session wrappers OK after explicit arm; GUI denylist never.
+            if blob and is_denied_cmdline(blob) and not is_god_session_wrapper(blob):
+                raise PermissionError(
+                    f"refusing to kill protected process {wid}"
+                )
         worker = self.adapter.kill(wid)
         return {"before": before, "after": worker.snapshot(), "confirmed": True}
 

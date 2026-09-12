@@ -37,6 +37,9 @@ GEMINI_JS = _proc(
     "node /opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/gemini.js",
 )
 GEMINI_USR = _proc(50203, "/usr/local/bin/gemini --help")
+AGY_LOCAL = _proc(64928, "/Users/simeong/.local/bin/agy --dangerously-skip-permissions")
+AGY_BARE = _proc(64929, "agy")
+ANTIGRAVITY = _proc(64930, "/Users/simeong/.local/bin/antigravity")
 
 # False positives — must NEVER match
 GROK_BOT = _proc(697, "/Applications/Grok Bot.app/Contents/MacOS/Grok Bot")
@@ -58,6 +61,9 @@ def test_cli_hit_exact_basenames():
     assert _cli_hit(GEMINI_NODE.command) == "gemini"
     assert _cli_hit(GEMINI_JS.command) == "gemini"
     assert _cli_hit(GEMINI_USR.command) == "gemini"
+    assert _cli_hit(AGY_LOCAL.command) == "agy"
+    assert _cli_hit(AGY_BARE.command) == "agy"
+    assert _cli_hit(ANTIGRAVITY.command) == "antigravity"
 
 
 def test_cli_hit_rejects_false_positives():
@@ -68,6 +74,9 @@ def test_cli_hit_rejects_false_positives():
     assert _cli_hit("progrok") is None
     assert _cli_hit("ngrok") is None
     assert _cli_hit("/Applications/Grok Bot.app/Contents/MacOS/Grok Bot") is None
+    assert _cli_hit("agency") is None
+    assert _cli_hit("proagy") is None
+    assert _cli_hit("node /tmp/agy-helper.js") is None
 
 
 def test_gui_denylist_still_covers_grok_bot():
@@ -95,6 +104,7 @@ def test_select_discovers_cli_not_false_positives():
         GROK_LOCAL,
         GEMINI_BREW,
         GEMINI_NODE,
+        AGY_LOCAL,
         GROK_BOT,
         GROK_HELPER,
         PROGROK,
@@ -105,6 +115,7 @@ def test_select_discovers_cli_not_false_positives():
     pids = {p.pid for p in selected}
     assert 50100 in pids
     assert 50200 in pids or 50201 in pids  # leaf preference may keep one gemini
+    assert 64928 in pids
     assert 697 not in pids
     assert 1025 not in pids
     assert 25006 not in pids
@@ -116,7 +127,7 @@ def test_list_workers_source_cli(tmp_path):
     adapter = GodModeAdapter(
         stack=STACK,
         include_demo=False,
-        _procs=[GROK_LOCAL, GEMINI_BREW, GROK_BOT, PROGROK, NGROK],
+        _procs=[GROK_LOCAL, GEMINI_BREW, AGY_LOCAL, GROK_BOT, PROGROK, NGROK],
         _deny_pids=set(),
         targets_path=tmp_path / "t.json",
     )
@@ -124,10 +135,13 @@ def test_list_workers_source_cli(tmp_path):
     by_id = {w.id: w for w in workers}
     assert "grok-cli-50100" in by_id
     assert "gemini-cli-50200" in by_id
+    assert "agy-cli-64928" in by_id
     assert by_id["grok-cli-50100"].source == "cli"
     assert by_id["gemini-cli-50200"].source == "cli"
+    assert by_id["agy-cli-64928"].source == "cli"
     assert by_id["grok-cli-50100"].name == "Grok CLI · 50100"
     assert by_id["gemini-cli-50200"].name == "Gemini CLI · 50200"
+    assert by_id["agy-cli-64928"].name == "Antigravity · 64928"
     # no false positives
     assert all("Grok Bot" not in (w.name or "") for w in workers)
     assert all(w.pid not in {697, 25006, 25007} for w in workers)
@@ -287,3 +301,7 @@ def test_voice_aliases_for_cli():
     assert cmd and cmd.action == "pause" and cmd.worker_id == "gemini-cli"
     cmd = parse_command("inspect grok")
     assert cmd and cmd.action == "inspect" and cmd.worker_id == "grok-cli"
+    cmd = parse_command("pause agy")
+    assert cmd and cmd.action == "pause" and cmd.worker_id == "agy-cli"
+    cmd = parse_command("inspect antigravity")
+    assert cmd and cmd.action == "inspect" and cmd.worker_id == "agy-cli"

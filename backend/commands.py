@@ -44,6 +44,14 @@ WORKER_ALIASES = {
     "god mode": "god-rt",
     "godmode": "god-rt",
     "god": "god-rt",
+    "god session": "god-session",
+    "god-session": "god-session",
+    "godsession": "god-session",
+    "claude session": "claude-session",
+    "claude-session": "claude-session",
+    "claudesession": "claude-session",
+    "my god session": "god-session",
+    "my claude session": "claude-session",
     "mcp hands": "mcp-hands",
     "mcp-hands": "mcp-hands",
     "mcphands": "mcp-hands",
@@ -55,6 +63,12 @@ WORKER_ALIASES = {
     "gemini-cli": "gemini-cli",
     "geminicli": "gemini-cli",
     "gemini": "gemini-cli",
+    "agy cli": "agy-cli",
+    "agy-cli": "agy-cli",
+    "agycli": "agy-cli",
+    "agy": "agy-cli",
+    "antigravity": "agy-cli",
+    "antigravity cli": "agy-cli",
 }
 
 FILLER = re.compile(
@@ -162,9 +176,14 @@ def parse_command(transcript: str) -> ParsedCommand | None:
         or re.search(r"\bwhere\s+is\b", text)
         or re.search(r"\bwhich\s+session\b", text)
         or re.search(r"\bwhat\s+terminal\b", text)
+        or re.search(r"\bmy\s+(god|claude)\s+session\b", text)
         or (text.startswith("where ") and _find_worker(text))
     ):
         wid = _find_worker(text)
+        if not wid and re.search(r"\bmy\s+god\s+session\b", text):
+            wid = "god-session"
+        if not wid and re.search(r"\bmy\s+claude\s+session\b", text):
+            wid = "claude-session"
         if wid:
             return ParsedCommand(action="session", worker_id=wid, raw=raw)
         if _IT.search(text):

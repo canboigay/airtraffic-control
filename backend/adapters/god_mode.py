@@ -50,6 +50,7 @@ SLUG_NAMES = {
     "fake-research": "Fake Research",
     "grok-cli": "Grok CLI",
     "gemini-cli": "Gemini CLI",
+    "agy-cli": "Antigravity",
 }
 INTERPRETERS = {
     "python",
@@ -106,10 +107,12 @@ DENY_PREFIXES = (
 # are NOT these — they keep their own names.
 SESSION_WRAPPER_NAMES = frozenset({"god", "claude"})
 # Terminal AI CLIs (exact basename only — never ngrok/progrok/Grok Bot.app).
-CLI_BINS = frozenset({"grok", "gemini"})
+CLI_BINS = frozenset({"grok", "gemini", "agy", "antigravity"})
 CLI_SLUGS = {
     "grok": "grok-cli",
     "gemini": "gemini-cli",
+    "agy": "agy-cli",
+    "antigravity": "agy-cli",
 }
 SCRIPT_EXTS = {".py", ".zsh", ".sh", ".js", ".mjs", ".ts", ".cjs", ""}
 
@@ -236,6 +239,9 @@ def kill_target_pids(proc: "Proc", procs: Iterable["Proc"]) -> list[int]:
     - No bulk tree kill / no ancestor walk into session wrappers.
     """
     by_pid = {p.pid: p for p in procs}
+    # Explicit kill of a god/claude session: that PID only (never children/parents).
+    if is_god_session_wrapper(proc.command):
+        return [proc.pid]
     targets: list[int] = [proc.pid]
     if is_mcp_hands_cmdline(proc.command):
         parent = by_pid.get(proc.ppid)
@@ -309,9 +315,8 @@ def is_denied_cmdline(command: str) -> bool:
     # ATC's own API server (also covered by port 8765)
     if "uvicorn" in low and ("backend.main:app" in low or "airtraffic-control" in low):
         return True
-    # Live god launcher + claude TUI sessions: listed never, signalled never
-    if is_god_session_wrapper(command):
-        return True
+    # god/claude TUI wrappers are LISTED as protected sessions (not denied here).
+    # GUI apps (Claude.app / Cursor / Grok Bot) stay denied via DENY_SUBSTR above.
     return False
 
 
@@ -380,11 +385,11 @@ def _cli_basename(name: str) -> str | None:
 # (optional .js for node). Never matches ngrok/progrok or "Grok Bot.app"
 # (spaces in Mac GUI paths would otherwise shlex-split into a false `Grok`).
 _CLI_ARGV0_RE = re.compile(
-    r"(?i)^(?P<bin>(?:[^\s]*/)?(?:grok|gemini)(?:\.js|\.mjs|\.cjs)?)(?:\s|$)"
+    r"(?i)^(?P<bin>(?:[^\s]*/)?(?:grok|gemini|agy|antigravity)(?:\.js|\.mjs|\.cjs)?)(?:\s|$)"
 )
 _CLI_NODE_RE = re.compile(
     r"(?i)^(?:node|nodejs|python[\w.]*)\s+"
-    r"(?P<bin>(?:[^\s]*/)?(?:grok|gemini)(?:\.js|\.mjs|\.cjs)?)(?:\s|$)"
+    r"(?P<bin>(?:[^\s]*/)?(?:grok|gemini|agy|antigravity)(?:\.js|\.mjs|\.cjs)?)(?:\s|$)"
 )
 
 
@@ -407,11 +412,14 @@ def _cli_hit(command: str) -> str | None:
 
 
 def classify_proc(proc: Proc, *, stack: str, include_demo: bool) -> bool:
-    """Return True if this process is a controllable candidate (denylist not applied)."""
+    """Return True if this process is a fleet candidate (incl. protected sessions)."""
     if is_denied_cmdline(proc.command):
         return False
     if _is_scanner(proc.command):
         return False
+    # Show god/claude TUI sessions as read-only protected workers
+    if is_god_session_wrapper(proc.command):
+        return True
     if _cli_hit(proc.command):
         return True
     if include_demo and _demo_hit(proc.command):
@@ -424,6 +432,18 @@ def classify_proc(proc: Proc, *, stack: str, include_demo: bool) -> bool:
 
 
 def slug_for(proc: Proc, *, stack: str) -> str:
+    if is_god_session_wrapper(proc.command):
+        # Distinguish launcher vs Claude CLI session
+        from pathlib import Path as _P
+        for t in _tokens(proc.command):
+            if not t or t.startswith("-"):
+                continue
+            name = _P(t).name.lower()
+            if name == "claude":
+                return "claude-session"
+            if name == "god":
+                return "god-session"
+        return "god-session"
     cli = _cli_hit(proc.command)
     if cli:
         return CLI_SLUGS[cli]
@@ -459,6 +479,9 @@ def human_name(slug: str, command: str, pid: int | None = None) -> str:
         "campaign-harness",
         "grok-cli",
         "gemini-cli",
+        "agy-cli",
+        "god-session",
+        "claude-session",
     }:
         base = f"{base} · {pid}"
     return base
@@ -484,8 +507,13 @@ def select_workers(
 
     kept_pids = {p.pid for p in kept}
     # Prefer the deepest workload (python -m mcp_hands.server over `uv run`)
+    # but KEEP god/claude session wrappers even when they parent another listed proc.
     parents = {p.ppid for p in kept if p.ppid in kept_pids}
-    leaves = [p for p in kept if p.pid not in parents]
+    leaves = [
+        p
+        for p in kept
+        if p.pid not in parents or is_god_session_wrapper(p.command)
+    ]
     return leaves or kept
 
 
@@ -628,10 +656,10 @@ class GodModeAdapter:
         self._note = (
             "Live God Mode adapter. Discovers user processes under GOD_STACK "
             "and named workloads (god-rt, campaign-harness, csuper, god-watch, mcp_hands), "
-            "plus terminal Grok CLI / Gemini CLI (source=cli; exact basename match). "
+            "plus terminal Grok / Gemini / Antigravity (agy) CLI (source=cli; exact basename match). "
             "Enriches each worker with session_tty / session_app / session_id / session_hint "
             "(tty + parent Terminal.app/iTerm/Claude.app/god launcher + Claude --resume). "
-            "Session wrappers (`…/god`, `claude` CLI) and Claude/Cursor/Grok Bot GUI are denylisted. "
+            "god/claude TUI sessions are listed as protected (source=session); Claude/Cursor/Grok Bot GUI stay denylisted. "
             "Redirect on God RT runs allowlisted quiet god-rt verbs (campaign_status/brief/list/ready/next/probe)."
         )
         self._last_steer: dict | None = None
@@ -680,7 +708,13 @@ class GodModeAdapter:
         if all_procs is not None:
             session_tree = ancestor_is_protected_session(proc, all_procs)
         slug = slug_for(proc, stack=self.stack)
-        source = "cli" if slug in {"grok-cli", "gemini-cli"} else "god"
+        protected = is_god_session_wrapper(proc.command)
+        if protected:
+            source = "session"
+        elif slug in {"grok-cli", "gemini-cli", "agy-cli"}:
+            source = "cli"
+        else:
+            source = "god"
         bp = by_pid
         if bp is None and all_procs is not None:
             bp = {p.pid: p for p in all_procs}
@@ -710,6 +744,7 @@ class GodModeAdapter:
             session_id=sess.session_id,
             session_cwd=sess.cwd,
             session_hint=sess.hint,
+            protected=protected,
         )
 
     def list_workers(self) -> list[Worker]:
@@ -772,17 +807,17 @@ class GodModeAdapter:
         raise KeyError(f"unknown worker: {worker_id}")
 
     def _guard(self, proc: Proc, *, op: str = "control") -> None:
-        # Never SIGSTOP/SIGTERM `zsh …/god` or `claude --resume …` unless the
-        # operator explicitly addressed that listed PID (wrappers are not listed).
-        if is_god_session_wrapper(proc.command) or is_denied_cmdline(proc.command):
+        # GUI / system denylist: never signal.
+        if is_denied_cmdline(proc.command):
             raise PermissionError(
-                f"refusing to {op} protected god/claude session pid={proc.pid}"
+                f"refusing to {op} protected process pid={proc.pid}"
             )
         if proc.pid in self._deny_pids():
             raise PermissionError(
                 f"refusing to {op} protected process pid={proc.pid}"
             )
-        # Resume may CONT a workload tree but still never the wrapper itself above.
+        # god/claude sessions are listed as protected; registry requires an explicit
+        # id/PID before calling us. Collateral kill/CONT still skips wrappers.
 
     def pause(self, worker_id: str) -> Worker:
         """SIGSTOP the listed PID only — never the process group or wrappers."""
@@ -809,7 +844,10 @@ class GodModeAdapter:
         wid, proc = self._get(worker_id)
         self._guard(proc, op="resume")
         snap = self._snapshot_procs()
-        tree = cont_target_pids(proc.pid, snap)
+        if is_god_session_wrapper(proc.command):
+            tree = [proc.pid]  # explicit session: never CONT into the whole TUI tree
+        else:
+            tree = cont_target_pids(proc.pid, snap)
         saw_root = False
         for pid in tree:
             try:
@@ -865,7 +903,7 @@ class GodModeAdapter:
             target=lookup_target(load_targets(self.targets_path), wid, old_pid),
             detail=f"killed (was pid={old_pid})",
             updated_at=_now(),
-            source="cli" if slug in {"grok-cli", "gemini-cli"} else "god",
+            source="cli" if slug in {"grok-cli", "gemini-cli", "agy-cli"} else "god",
         )
 
     def pop_last_steer(self) -> dict | None:

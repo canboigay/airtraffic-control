@@ -646,6 +646,7 @@ function workerMetaHtml(w) {
   ];
   if (up) bits.push(`<span>up ${escapeHtml(up)}</span>`);
   if (w.source) bits.push(`<span>${escapeHtml(w.source)}</span>`);
+  if (w.protected) bits.push(`<span class="protected-badge" title="Read-only unless you name this id/PID">protected</span>`);
   if (w.session_hint) {
     bits.push(`<span class="session-hint" title="Terminal / session">${escapeHtml(w.session_hint)}</span>`);
   } else if (w.session_tty || w.session_app) {
@@ -737,6 +738,7 @@ function createWorkerRow(w) {
         <span class="worker-chevron" aria-hidden="true">▸</span>
         <span class="worker-name">${escapeHtml(w.name || w.id)}</span>
         <span class="status ${escapeHtml(w.status)}">${escapeHtml(w.status)}</span>
+        ${w.protected ? '<span class="status protected">protected</span>' : ''}
       </div>
       <div class="worker-meta">${workerMetaHtml(w)}</div>
     </div>
@@ -760,10 +762,22 @@ function updateWorkerRow(row, w) {
   const nameEl = row.querySelector(".worker-name");
   if (nameEl) nameEl.textContent = w.name || w.id;
 
-  const statusEl = row.querySelector(".status");
+  const statusEl = row.querySelector(".status:not(.protected)");
   if (statusEl) {
     statusEl.className = `status ${w.status}`;
     statusEl.textContent = w.status;
+  }
+  let protEl = row.querySelector(".status.protected");
+  if (w.protected && !protEl) {
+    const nameRow = row.querySelector(".worker-name-row");
+    if (nameRow) {
+      protEl = document.createElement("span");
+      protEl.className = "status protected";
+      protEl.textContent = "protected";
+      nameRow.appendChild(protEl);
+    }
+  } else if (!w.protected && protEl) {
+    protEl.remove();
   }
 
   const metaEl = row.querySelector(".worker-meta");

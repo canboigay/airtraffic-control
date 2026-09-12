@@ -765,3 +765,15 @@ h3 {
   content: "⌥ ";
   opacity: 0.7;
 }
+
+.status.protected,
+.protected-badge {
+  color: #ffd60a;
+  border: 1px solid rgba(255, 214, 10, 0.35);
+  background: rgba(255, 214, 10, 0.08);
+  border-radius: 4px;
+  padding: 0 6px;
+  font-size: 0.75em;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}

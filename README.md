@@ -111,7 +111,7 @@ PYTHONPATH=. pytest -q
 
 Default adapter mode is **`ATC_ADAPTER=hybrid`**: the three demo workers stay available for the Speechmatics demo, and the live `GodModeAdapter` also lists user `simeong` processes from the God Mode stack (`GOD_STACK`, default `/Users/simeong/local-claude-offline-stack`).
 
-- `hybrid` (default) — demo workers + discovered stack processes (`god-rt`, `campaign-harness`, `csuper`, `god-watch`, `mcp_hands`, and python/zsh/node scripts under the stack) **plus** terminal **Grok CLI** / **Gemini CLI** sessions
+- `hybrid` (default) — demo workers + discovered stack processes (`god-rt`, `campaign-harness`, `csuper`, `god-watch`, `mcp_hands`, and python/zsh/node scripts under the stack) **plus** terminal **Grok CLI** / **Gemini CLI** / **Antigravity (agy)** sessions
 - `local` — discovery only; demo workers are **not** spawned
 - `demo` — the original three fake workers only
 
@@ -123,8 +123,9 @@ Live terminal sessions are discovered as workers with `source=cli` (not `god`):
 |-------------------------|------------------|
 | `grok` (e.g. `~/.local/bin/grok`, `~/.grok/bin/grok`, npm-global) | `grok-cli-<pid>` named **Grok CLI** with pid suffix |
 | `gemini` (e.g. `/opt/homebrew/bin/gemini`, npm-global, `/usr/local`, or `node …/gemini.js`) | `gemini-cli-<pid>` named **Gemini CLI** with pid suffix |
+| `agy` / `antigravity` (e.g. `~/.local/bin/agy`) | `agy-cli-<pid>` named **Antigravity** with pid suffix |
 
-Matching is **argv0 / basename exact** (`grok`, `gemini`) — it does **not** match `Grok Bot.app`, `grok bot`, `progrok`, or `ngrok`. Claude / Cursor / Grok Bot GUI stay on the discovery denylist.
+Matching is **argv0 / basename exact** (`grok`, `gemini`, `agy`, `antigravity`) — it does **not** match `Grok Bot.app`, `grok bot`, `progrok`, `ngrok`, or unrelated `agy*` strings. Claude / Cursor / Grok Bot GUI stay on the discovery denylist.
 
 Policy: same as other non-wrapper discovered workers — list, `pause`/`resume`/`inspect`, and kill-with-confirm on the listed PID. `pause all` stays **demo-only** (CLI sessions are not fleet-paused). Pause is `SIGSTOP` on that PID only; resume still `SIGCONT`s the worker and its descendants.
 
@@ -201,7 +202,7 @@ Fast path + `worker_session` agent tool both answer from the same fields. Worker
 
 Hard rules — discovery stays read-only; control never walks into a live TUI by accident:
 
-1. Never `SIGSTOP` / `SIGCONT` / `SIGTERM` `zsh …/god` or `claude --resume …` unless the operator explicitly names that session/PID (wrappers are denylisted and not listed).
+1. **Show** `zsh …/god` and `claude --resume …` as **protected** workers (`source=session`, `protected=true`) with `session_tty` + resume id / `session_hint`. Never signal them unless the operator **explicitly names** that session id or PID. Fleet `pause all` always skips them.
 2. **MCP Hands kill** targets the exact `mcp_hands.server` PID, plus its immediate `uv`/`python` parent **only if** that parent's cmdline clearly mentions `mcp_hands`. Never walk up into `claude` / `god`.
 3. `pause all` stays **demo-only**. God/claude wrappers stay denylisted from fleet control forever unless explicitly named.
 4. Session labels show **tty + role** (and `near resume …` when a Claude `--resume` shares the tty) so an **mcp-hands** row is never mistaken for the foreground god session.

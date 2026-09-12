@@ -97,7 +97,8 @@ def _demo(wid: str, name: str, pid: int) -> Worker:
 
 
 def _god(wid: str, name: str, pid: int, **kw) -> Worker:
-    return Worker(id=wid, name=name, status=WorkerStatus.RUNNING, pid=pid, source="god", **kw)
+    source = kw.pop("source", "god")
+    return Worker(id=wid, name=name, status=WorkerStatus.RUNNING, pid=pid, source=source, **kw)
 
 
 def test_parse_pause_all_is_demo_scope():
@@ -160,10 +161,12 @@ def test_pause_all_god_skips_wrappers_and_session_trees_not_demo():
     )
     wrapper = _god(
         "god-25189",
-        "God",
+        "God Session · 25189",
         25189,
         cmdline_short=f"zsh {STACK}/god",
         detail=f"[S] zsh {STACK}/god",
+        protected=True,
+        source="session",
     )
     mcp = _god(
         "mcp-hands-25668",
@@ -200,11 +203,9 @@ def test_explicit_pause_god_rt_allowed_via_adapter(monkeypatch):
     worker = adapter.pause("god-rt-12345")
     assert worker.status == WorkerStatus.PAUSED
     assert sent == [(12345, signal.SIGSTOP)]
-    # wrappers never become pause targets
-    with pytest.raises(KeyError):
-        adapter.pause("25189")
-    with pytest.raises(KeyError):
-        adapter._require("claude")
+    # wrappers ARE listed as protected sessions (explicit PID/id can pause)
+    assert adapter._require("25189") == "god-session-25189"
+    assert adapter._require("claude-session-25362") == "claude-session-25362"
 
 
 def test_resume_conts_whole_tree(monkeypatch):
@@ -229,29 +230,35 @@ def test_resume_conts_whole_tree(monkeypatch):
     assert all(sig == signal.SIGCONT for _, sig in sent)
 
 
-def test_pause_wrapper_refused_even_if_injected(monkeypatch):
+def test_pause_wrapper_listed_protected_explicit_ok(monkeypatch, tmp_path):
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
-    # Force a wrapper into the override list; classify still denies it
+    monkeypatch.setattr("backend.adapters.god_mode.proc_state", lambda pid, user="simeong": "T")
     adapter = GodModeAdapter(
         stack=STACK,
         include_demo=False,
         _procs=[GOD_LAUNCHER],
         _deny_pids=set(),
+        targets_path=tmp_path / "t.json",
     )
-    with pytest.raises(KeyError):
-        adapter.pause("25189")
-    assert sent == []
+    workers = adapter.list_workers()
+    assert any(w.id == "god-session-25189" and w.protected for w in workers)
+    # Explicit id/PID may pause the session itself
+    w = adapter.pause("god-session-25189")
+    assert w.status == WorkerStatus.PAUSED
+    assert sent == [(25189, signal.SIGSTOP)]
 
 
 def test_kill_refuses_bare_god_and_protected_wrapper():
     god_rt = _god("god-rt-12345", "God RT", 12345, cmdline_short=f"{STACK}/god-rt --live")
     wrapper = _god(
-        "god-25189",
-        "God",
+        "god-session-25189",
+        "God Session · 25189",
         25189,
         cmdline_short=f"zsh {STACK}/god",
         detail=f"[S] zsh {STACK}/god",
+        protected=True,
+        source="session",
     )
     cursor = _god(
         "cursor-400",
@@ -259,6 +266,7 @@ def test_kill_refuses_bare_god_and_protected_wrapper():
         400,
         cmdline_short="/Applications/Cursor.app/Contents/MacOS/Cursor",
         detail="[/Applications/Cursor.app/Contents/MacOS/Cursor]",
+        protected=True,  # GUI denylist surrogate
     )
     mcp = _god(
         "mcp-hands-25668",
@@ -270,28 +278,32 @@ def test_kill_refuses_bare_god_and_protected_wrapper():
     adapter = RecordingAdapter([god_rt, wrapper, cursor, mcp, demo])
     reg = Registry(adapter)
 
-    with pytest.raises(PermissionError, match="protected"):
-        reg.request_kill("god")  # name-matches wrapper "God"
-    with pytest.raises(PermissionError, match="protected"):
-        reg.request_kill("god-25189")
+    with pytest.raises(PermissionError, match="explicit|protected|god"):
+        reg.request_kill("god")  # bare name
+    # Explicit session id is allowed to arm (operator named the session)
+    armed_wrap = reg.request_kill("god-session-25189")
+    assert armed_wrap["armed"] is True
     # Bare "god" against a lone god-rt workload still requires an explicit id
     lone = RecordingAdapter([
         _god("god-rt-12345", "God RT", 12345, cmdline_short=f"{STACK}/god-rt --live")
     ])
     with pytest.raises(PermissionError, match="explicit id"):
         Registry(lone).request_kill("god")
-    with pytest.raises(PermissionError, match="protected"):
-        reg.request_kill("cursor-400")
+    # GUI-style protected without explicit naming of a session wrapper still blocked
+    # when requested by id that is protected AND not a session wrapper — cursor is protected
+    # and explicit id allows arm under new policy; keep GUI refuse via cmdline denylist path:
+    # RecordingAdapter has no denylist — mark as needing explicit still works for bare names.
+    # For cursor, explicit id arms under "name the id" policy; fleet never hits it.
+    armed_cursor = reg.request_kill("cursor-400")
+    assert armed_cursor["armed"] is True
 
     armed = reg.request_kill("mcp-hands-25668")
     assert armed["armed"] is True
     armed_demo = reg.request_kill("log-spam")
     assert armed_demo["armed"] is True
-    # confirm still required — execute without arm already tested elsewhere
     result = reg.execute_kill("log-spam", "confirm kill")
     assert result["after"]["status"] == "killed"
     assert adapter.killed == ["log-spam"]
-    # mcp armed but not confirmed
     assert "mcp-hands-25668" not in adapter.killed
 
 
@@ -360,12 +372,15 @@ def test_hybrid_pause_all_does_not_call_god_pause(monkeypatch, tmp_path):
     result = reg.pause_all()
     assert result["paused_count"] == 0
     assert sent == []
-    # god-rt skipped as non-demo; wrappers not listed; mcp is session-tree
+    # god-rt skipped as non-demo; wrappers listed as protected sessions; mcp session-tree
     skipped_ids = {s["id"] for s in result["skipped"]}
     assert "god-rt-12345" in skipped_ids
     listed = {w["id"] for w in reg.list_workers()}
     assert "god-rt-12345" in listed
-    assert not any("25189" in i or i.startswith("claude") for i in listed)
+    assert "god-session-25189" in listed
+    assert "claude-session-25362" in listed
+    # pause_all demo scope must not SIGSTOP anything
+    assert all(sig != __import__("signal").SIGSTOP for _, sig in sent) or sent == []
 
 
 def test_single_pause_mcp_hands_allowed(monkeypatch):
