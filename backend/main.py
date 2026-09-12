@@ -208,6 +208,20 @@ def confirm_kill(worker_id: str, body: KillConfirmRequest) -> dict[str, Any]:
     return result
 
 
+
+@app.post("/api/workers/{worker_id}/kill/cancel")
+def cancel_kill(worker_id: str) -> dict[str, Any]:
+    """Disarm a pending kill (no process signal)."""
+    result = registry.cancel_kill(worker_id)
+    audit_log.record(
+        "kill.cancel",
+        worker_id=worker_id,
+        detail=result,
+        source="api",
+    )
+    return result
+
+
 @app.post("/api/workers/{worker_id}/redirect")
 def redirect_worker(worker_id: str, body: RedirectRequest) -> dict[str, Any]:
     try:

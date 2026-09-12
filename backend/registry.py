@@ -345,6 +345,20 @@ class Registry:
             "message": f'Say "{CONFIRM_PHRASE}" to kill {before["name"]} (PID {before.get("pid")})',
         }
 
+    def cancel_kill(self, worker_id: str) -> dict[str, Any]:
+        """Disarm a pending kill without confirming."""
+        wid = self.resolve_id(worker_id) or worker_id
+        with self._lock:
+            had = wid in self._pending_kills
+            self._pending_kills.pop(wid, None)
+        return {
+            "cancelled": had,
+            "worker_id": wid,
+            "message": (
+                f"Kill disarmed for {wid}" if had else f"No pending kill for {wid}"
+            ),
+        }
+
     def execute_kill(self, worker_id: str, confirm: str) -> dict[str, Any]:
         wid = self.resolve_id(worker_id) or worker_id
         normalized = " ".join(confirm.lower().strip().split())

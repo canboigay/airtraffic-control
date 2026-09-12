@@ -1137,3 +1137,13 @@ h3 {
 
 /* Legacy inspect (unused) kept for safety */
 .inspect-drawer[hidden] { display: none !important; }
+
+.worker-meta .left-off-preview {
+  display: inline-block;
+  max-width: 42ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.72;
+  font-style: italic;
+}

@@ -54,6 +54,21 @@ class LeftOff:
             "line_count": len(self.lines),
         }
 
+    def preview(self, max_len: int = 140) -> str | None:
+        """One-line card blurb for list workers (None when nothing useful)."""
+        text = ""
+        if self.lines:
+            text = str(self.lines[-1] or "").strip()
+        elif self.note and self.note not in {"no transcript yet", "no session id"}:
+            text = str(self.note).strip()
+        if not text:
+            return None
+        # Collapse whitespace for card meta
+        text = " ".join(text.split())
+        if len(text) > max_len:
+            text = text[: max_len - 1].rstrip() + "…"
+        return text
+
 
 @dataclass
 class SteerDelivery:

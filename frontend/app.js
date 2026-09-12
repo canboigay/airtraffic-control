@@ -700,6 +700,9 @@ function workerMetaHtml(w) {
     const parts = [w.session_tty, w.session_app].filter(Boolean);
     bits.push(`<span class="session-hint" title="Terminal / session">${escapeHtml(parts.join(" · "))}</span>`);
   }
+  if (w.left_off_preview) {
+    bits.push(`<span class="left-off-preview" title="Left off">${escapeHtml(w.left_off_preview)}</span>`);
+  }
   return bits.join("");
 }
 

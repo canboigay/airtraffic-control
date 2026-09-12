@@ -904,6 +904,22 @@ class GodModeAdapter:
                 status = WorkerStatus.STALE
             else:
                 status = WorkerStatus.RUNNING
+            # Cheap one-liner for cards (full transcript stays on inspect)
+            try:
+                from backend.session_depth import resolve_left_off
+
+                left = resolve_left_off(
+                    source=source,
+                    slug=slug,
+                    session_id=session_id,
+                    pid=proc.pid,
+                    cwd=sess.cwd,
+                    stack=self.stack,
+                    lines=2,
+                )
+                preview = left.preview(140)
+            except Exception:
+                preview = None
 
         cpu_pct = float(getattr(proc, "cpu", 0.0) or 0.0)
         detail = f"[{state_letter} cpu={cpu_pct:.1f}] {detail_cmd}"
