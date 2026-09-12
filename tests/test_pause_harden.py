@@ -378,7 +378,8 @@ def test_hybrid_pause_all_does_not_call_god_pause(monkeypatch, tmp_path):
     listed = {w["id"] for w in reg.list_workers()}
     assert "god-rt-12345" in listed
     assert "god-session-25189" in listed
-    assert "claude-session-25362" in listed
+    # god+claude sharing tty/resume collapse to one god-session card
+    assert "claude-session-25362" not in listed
     # pause_all demo scope must not SIGSTOP anything
     assert all(sig != __import__("signal").SIGSTOP for _, sig in sent) or sent == []
 
