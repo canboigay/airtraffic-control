@@ -68,12 +68,16 @@ def test_enrich_walks_parents_for_app_and_resume():
     by_pid = {p.pid: p for p in (terminal, login, zsh, god, claude, mcp)}
 
     sess_mcp = enrich_session(
-        pid=mcp.pid, ppid=mcp.ppid, tty=mcp.tty, command=mcp.command, by_pid=by_pid
+        pid=mcp.pid, ppid=mcp.ppid, tty=mcp.tty, command=mcp.command, by_pid=by_pid,
+        role="mcp-hands",
     )
     assert sess_mcp.tty == "ttys000"
     assert sess_mcp.app == "Terminal.app"
     assert sess_mcp.session_id is None  # resume is on sibling, not ancestor
     assert "ttys000" in (sess_mcp.hint or "")
+    assert "mcp-hands" in (sess_mcp.hint or "")
+    assert "near resume" in (sess_mcp.hint or "")  # same tty as claude --resume
+    assert "resume 146e90ce" in (sess_mcp.hint or "")
 
     sess_claude = enrich_session(
         pid=claude.pid, ppid=claude.ppid, tty=claude.tty, command=claude.command, by_pid=by_pid
@@ -113,6 +117,7 @@ def test_list_workers_includes_session_fields(tmp_path):
     assert w.session_tty == "ttys003"
     assert w.session_app == "Terminal.app"
     assert w.session_hint and "ttys003" in w.session_hint
+    assert "mcp-hands" in w.session_hint
     snap = w.snapshot()
     assert snap["session_tty"] == "ttys003"
     assert snap["session_app"] == "Terminal.app"

@@ -87,17 +87,42 @@ def format_session_hint(
     app: str | None,
     session_id: str | None,
     cwd: str | None = None,
+    *,
+    role: str | None = None,
+    near_resume: str | None = None,
 ) -> str | None:
+    """Short card label. tty + app + role so mcp-hands ≠ foreground god session."""
     bits: list[str] = []
     if tty:
         bits.append(tty)
     if app:
         bits.append(app)
+    if role:
+        bits.append(role)
     if session_id:
         bits.append(f"resume {session_id[:8]}…")
+    elif near_resume:
+        bits.append(f"near resume {near_resume[:8]}…")
     if not bits and cwd:
         bits.append(Path(cwd).name)
     return " · ".join(bits) if bits else None
+
+
+def _same_tty_resume(tty: str | None, pid: int, by_pid: dict[int, object]) -> str | None:
+    """Find Claude --resume on another process sharing this tty (not self)."""
+    if not tty:
+        return None
+    for other in by_pid.values():
+        opid = getattr(other, "pid", None)
+        if opid == pid:
+            continue
+        otty = normalize_tty(getattr(other, "tty", None))
+        if otty != tty:
+            continue
+        rid = parse_claude_resume(getattr(other, "command", "") or "")
+        if rid:
+            return rid
+    return None
 
 
 def enrich_session(
@@ -108,13 +133,22 @@ def enrich_session(
     command: str,
     by_pid: dict[int, object],
     cwd_map: dict[int, str] | None = None,
+    role: str | None = None,
 ) -> SessionContext:
-    """Walk parents for app / --resume; attach tty + optional cwd."""
+    """Walk parents for app / --resume; attach tty + optional cwd + role label.
+
+    session_id is ONLY from self or ancestors (the process is in that Claude
+    session). Sibling Claude on the same tty is exposed via hint "near resume"
+    so mcp-hands rows stay visually distinct from the foreground god session.
+    """
     tty_n = normalize_tty(tty)
     resume = parse_claude_resume(command)
     app = classify_session_app(command)
+    own_or_ancestor_resume = resume is not None
 
     # Parent walk (cycle-safe). Prefer first GUI/app label found nearest self.
+    # Do NOT treat ancestor god/claude wrapper as making a workload "be" that session
+    # for session_id unless the ancestor cmdline itself has --resume (claude).
     seen: set[int] = {pid}
     cur_ppid = ppid
     while cur_ppid and cur_ppid not in seen:
@@ -124,16 +158,32 @@ def enrich_session(
             break
         pcmd = getattr(parent, "command", "") or ""
         if resume is None:
-            resume = parse_claude_resume(pcmd)
+            got = parse_claude_resume(pcmd)
+            if got:
+                resume = got
+                own_or_ancestor_resume = True
         if app is None:
             app = classify_session_app(pcmd)
         cur_ppid = getattr(parent, "ppid", 0) or 0
 
+    near = None
+    if not own_or_ancestor_resume:
+        near = _same_tty_resume(tty_n, pid, by_pid)
+
     cwd = None
     if cwd_map is not None:
         cwd = cwd_map.get(pid)
-    hint = format_session_hint(tty_n, app, resume, cwd)
-    return SessionContext(tty=tty_n, app=app, session_id=resume, cwd=cwd, hint=hint)
+    hint = format_session_hint(
+        tty_n, app, resume if own_or_ancestor_resume else None, cwd,
+        role=role, near_resume=near,
+    )
+    return SessionContext(
+        tty=tty_n,
+        app=app,
+        session_id=resume if own_or_ancestor_resume else None,
+        cwd=cwd,
+        hint=hint,
+    )
 
 
 def read_cwds_cheap(pids: Iterable[int], *, timeout: float = 1.5) -> dict[int, str]:
@@ -175,12 +225,11 @@ def spoken_session_answer(worker: dict) -> str:
     cwd = worker.get("session_cwd")
     hint = worker.get("session_hint")
     source = (worker.get("source") or "").lower()
+    wid = str(worker.get("id") or "")
 
     if source == "demo" and not tty:
         return f"{name} is an ATC demo worker (no terminal)."
-    if hint and tty and app:
-        msg = f"{name} is on {tty} in {app}."
-    elif tty and app:
+    if tty and app:
         msg = f"{name} is on {tty} in {app}."
     elif tty:
         msg = f"{name} is on {tty}."
@@ -192,6 +241,9 @@ def spoken_session_answer(worker: dict) -> str:
         msg = f"{name} has no terminal session metadata."
     if sid:
         msg = msg.rstrip(".") + f" Claude resume {sid[:8]}."
+    elif hint and "near resume" in hint and "mcp" in wid.lower():
+        # Distinguish mcp-hands from the foreground god/claude on same tty
+        msg = msg.rstrip(".") + " Same tty as a Claude resume session, not the god TUI."
     elif cwd and not tty:
         msg = msg.rstrip(".") + f" cwd {Path(cwd).name}."
     return msg

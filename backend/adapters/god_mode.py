@@ -211,6 +211,76 @@ def descendant_pids(procs: Iterable[Proc], root_pid: int) -> list[int]:
     return out
 
 
+
+def is_mcp_hands_cmdline(command: str) -> bool:
+    """True only for mcp_hands server / uv wrappers that clearly run mcp_hands."""
+    low = (command or "").lower()
+    if "mcp_hands" not in low and "mcp-hands" not in low:
+        return False
+    # Exact server module or path containing mcp_hands project/bin
+    if "mcp_hands.server" in low or "-m mcp_hands" in low:
+        return True
+    if "mcp_hands" in low and ("uv run" in low or "/mcp_hands" in low):
+        return True
+    return False
+
+
+def kill_target_pids(proc: "Proc", procs: Iterable["Proc"]) -> list[int]:
+    """PIDs to signal on kill — never walk into god/claude ancestors.
+
+    Hard rule (Simeon):
+    - Default: listed PID only.
+    - mcp_hands: listed `mcp_hands.server` PID, plus immediate uv/python parent
+      ONLY when that parent's cmdline clearly mentions mcp_hands.
+    - Never SIGTERM/SIGKILL `zsh …/god` or `claude --resume …` as collateral.
+    - No bulk tree kill / no ancestor walk into session wrappers.
+    """
+    by_pid = {p.pid: p for p in procs}
+    targets: list[int] = [proc.pid]
+    if is_mcp_hands_cmdline(proc.command):
+        parent = by_pid.get(proc.ppid)
+        if (
+            parent is not None
+            and is_mcp_hands_cmdline(parent.command)
+            and not is_god_session_wrapper(parent.command)
+            and not is_denied_cmdline(parent.command)
+        ):
+            targets.append(parent.pid)
+    # Final filter: never signal protected wrappers even if mis-parented
+    out: list[int] = []
+    for pid in targets:
+        p = by_pid.get(pid)
+        if p is not None and (
+            is_god_session_wrapper(p.command) or is_denied_cmdline(p.command)
+        ):
+            continue
+        out.append(pid)
+    # Always keep the leaf if it itself is a legitimate mcp/workload (not wrapper)
+    if proc.pid not in out and not is_god_session_wrapper(proc.command) and not is_denied_cmdline(proc.command):
+        out.insert(0, proc.pid)
+    return list(dict.fromkeys(out))
+
+
+def cont_target_pids(root_pid: int, procs: Iterable["Proc"]) -> list[int]:
+    """SIGCONT targets: root + descendants, skipping god/claude wrappers."""
+    by_pid = {p.pid: p for p in procs}
+    out: list[int] = []
+    for pid in [root_pid, *descendant_pids(procs, root_pid)]:
+        p = by_pid.get(pid)
+        if p is not None and (
+            is_god_session_wrapper(p.command) or is_denied_cmdline(p.command)
+        ):
+            continue
+        out.append(pid)
+    if root_pid not in out:
+        # Still CONT the root workload itself if it is not a wrapper
+        root = by_pid.get(root_pid)
+        if root is None or not (
+            is_god_session_wrapper(root.command) or is_denied_cmdline(root.command)
+        ):
+            out.insert(0, root_pid)
+    return list(dict.fromkeys(out))
+
 def ancestor_is_protected_session(proc: Proc, procs: Iterable[Proc]) -> bool:
     """True if any ancestor is a god/claude wrapper or other denied session."""
     by_pid = {p.pid: p for p in procs}
@@ -621,6 +691,7 @@ class GodModeAdapter:
             command=proc.command,
             by_pid=bp or {},
             cwd_map=cwd_map,
+            role=slug,
         )
         return Worker(
             id=worker_id,
@@ -701,13 +772,17 @@ class GodModeAdapter:
         raise KeyError(f"unknown worker: {worker_id}")
 
     def _guard(self, proc: Proc, *, op: str = "control") -> None:
-        # SIGCONT is used to unstick trees; never refuse resume on denylist.
-        if op == "resume":
-            return
-        if proc.pid in self._deny_pids() or is_denied_cmdline(proc.command):
+        # Never SIGSTOP/SIGTERM `zsh …/god` or `claude --resume …` unless the
+        # operator explicitly addressed that listed PID (wrappers are not listed).
+        if is_god_session_wrapper(proc.command) or is_denied_cmdline(proc.command):
+            raise PermissionError(
+                f"refusing to {op} protected god/claude session pid={proc.pid}"
+            )
+        if proc.pid in self._deny_pids():
             raise PermissionError(
                 f"refusing to {op} protected process pid={proc.pid}"
             )
+        # Resume may CONT a workload tree but still never the wrapper itself above.
 
     def pause(self, worker_id: str) -> Worker:
         """SIGSTOP the listed PID only — never the process group or wrappers."""
@@ -733,7 +808,8 @@ class GodModeAdapter:
         """SIGCONT the worker and every descendant (heal leftover T children)."""
         wid, proc = self._get(worker_id)
         self._guard(proc, op="resume")
-        tree = [proc.pid, *descendant_pids(self._snapshot_procs(), proc.pid)]
+        snap = self._snapshot_procs()
+        tree = cont_target_pids(proc.pid, snap)
         saw_root = False
         for pid in tree:
             try:
@@ -761,20 +837,25 @@ class GodModeAdapter:
         wid, proc = self._get(worker_id)
         self._guard(proc, op="kill")
         old_pid = proc.pid
+        snap = self._snapshot_procs()
+        targets = kill_target_pids(proc, snap)
         # SIGKILL works on stopped processes; TERM may sit pending until CONT.
-        try:
-            os.kill(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        deadline = time.time() + 3.0
-        while time.time() < deadline and pid_exists(proc.pid):
-            time.sleep(0.1)
-        if pid_exists(proc.pid):
+        # Never walk up into god/claude — targets are leaf (+ optional mcp uv parent).
+        for pid in targets:
             try:
-                os.kill(proc.pid, signal.SIGKILL)
+                os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            time.sleep(0.05)
+        deadline = time.time() + 3.0
+        while time.time() < deadline and any(pid_exists(p) for p in targets):
+            time.sleep(0.1)
+        for pid in targets:
+            if pid_exists(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        time.sleep(0.05)
         slug = slug_for(proc, stack=self.stack)
         return Worker(
             id=wid,

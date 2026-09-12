@@ -196,6 +196,18 @@ Demo workers get `session_hint=ATC demo`. Discovery still never signals processe
 
 Fast path + `worker_session` agent tool both answer from the same fields. Worker cards show the session hint next to source/PID.
 
+
+### Kill / signal harden (god · claude · mcp-hands)
+
+Hard rules — discovery stays read-only; control never walks into a live TUI by accident:
+
+1. Never `SIGSTOP` / `SIGCONT` / `SIGTERM` `zsh …/god` or `claude --resume …` unless the operator explicitly names that session/PID (wrappers are denylisted and not listed).
+2. **MCP Hands kill** targets the exact `mcp_hands.server` PID, plus its immediate `uv`/`python` parent **only if** that parent's cmdline clearly mentions `mcp_hands`. Never walk up into `claude` / `god`.
+3. `pause all` stays **demo-only**. God/claude wrappers stay denylisted from fleet control forever unless explicitly named.
+4. Session labels show **tty + role** (and `near resume …` when a Claude `--resume` shares the tty) so an **mcp-hands** row is never mistaken for the foreground god session.
+5. No bulk cleanup of old god trees without an explicit named order.
+
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
