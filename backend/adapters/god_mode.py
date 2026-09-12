@@ -749,14 +749,12 @@ class GodModeAdapter:
         # God launcher: inherit Claude --resume from child when possible
         if session_id is None and protected and slug == "god-session":
             from backend.session_depth import child_or_self_session_id
-            from backend.session_insight import parse_claude_resume
+            from backend.session_insight import format_session_hint, parse_claude_resume
 
             session_id = child_or_self_session_id(
                 proc.pid, proc.command, bp or {}, parse_resume=parse_claude_resume
             )
-            if session_id and sess.hint and "resume" not in sess.hint:
-                from backend.session_insight import format_session_hint
-
+            if session_id:
                 hint = format_session_hint(
                     sess.tty, sess.app, session_id, sess.cwd, role=slug
                 )

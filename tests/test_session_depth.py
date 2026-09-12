@@ -162,6 +162,8 @@ def test_list_workers_idle_badge_and_child_session(tmp_path):
     assert gw.protected is True
     # god inherits child resume for transcript depth
     assert gw.session_id == SID
+    assert "near resume" not in (gw.session_hint or "")
+    assert "resume 146e90ce" in (gw.session_hint or "")
 
 
 def test_inspect_session_uses_transcript_not_campaign(tmp_path, monkeypatch):
