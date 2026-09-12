@@ -144,9 +144,10 @@ async function speakTower(text, opts = {}) {
   speaking = true;
   bargeHoldUntil = Date.now() + 350;
 
-  // Fast fleet replies: browser TTS (snappy). Chat / long replies: neural.
-  const preferBrowser = !!(opts && (opts.fastPath || opts.browser));
-  if (!USE_NEURAL_TTS || preferBrowser) {
+  // Always prefer neural (smooth). Browser TTS is fallback only if neural fails
+  // or USE_NEURAL_TTS is off — never force robotic voice for fast_path.
+  const forceBrowser = !!(opts && opts.browser) && !USE_NEURAL_TTS;
+  if (!USE_NEURAL_TTS || forceBrowser) {
     speakBrowser(text, gen);
     return;
   }
@@ -164,7 +165,7 @@ async function speakTower(text, opts = {}) {
       const url = URL.createObjectURL(blob);
       towerAudioUrl = url;
       const audio = new Audio(url);
-      audio.playbackRate = 1.12;
+      audio.playbackRate = 1.0;
       towerAudio = audio;
       audio.onended = () => {
         if (gen !== speakGen) return;

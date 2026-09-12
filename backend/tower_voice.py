@@ -14,7 +14,7 @@ OPENROUTER_URL = os.environ.get("OPENROUTER_URL", "https://openrouter.ai/api/v1/
 OPENROUTER_MODEL = os.environ.get("ATC_OPENROUTER_MODEL", "deepseek/deepseek-chat")
 DEEPSEEK_URL = os.environ.get("DEEPSEEK_URL", "https://api.deepseek.com/chat/completions")
 DEEPSEEK_MODEL = os.environ.get("ATC_DEEPSEEK_MODEL", "deepseek-chat")
-TTS_VOICE = os.environ.get("ATC_TTS_VOICE", "en-US-AvaNeural")
+TTS_VOICE = os.environ.get("ATC_TTS_VOICE", "en-US-ChristopherNeural")
 
 
 def _fallback_reply(heard: str, payload: dict[str, Any]) -> str:
@@ -208,7 +208,7 @@ async def synthesize_mp3(text: str) -> bytes:
     text = sanitize_for_tts(text)
     import edge_tts
 
-    communicate = edge_tts.Communicate(text, TTS_VOICE, rate="+12%")
+    communicate = edge_tts.Communicate(text, TTS_VOICE, rate="+5%")
     buf = io.BytesIO()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
