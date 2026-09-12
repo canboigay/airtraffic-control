@@ -1,1 +1,1 @@
-"""AeroVoice Flight Controller backend."""
+"""AiRTraffic Control backend."""

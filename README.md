@@ -1,4 +1,4 @@
-# AeroVoice Flight Controller
+# AiRTraffic Control
 
 **Voice air-traffic control for AI agent fleets** — hackathon MVP for [AI Infra Summit](https://aiinfrasummit.com/) Speechmatics bonus track (submit by Sep 16, 2026 11:30 PT).
 
@@ -6,7 +6,7 @@ One screen: big listening state, a short list of running workers (name / status 
 
 ## Why
 
-Agent fleets already have dashboards and CLIs. They rarely have a hands-free control surface that is as fast as talking to a tower. AeroVoice is a thin ATC layer: listen → parse → act → prove it in the audit log.
+Agent fleets already have dashboards and CLIs. They rarely have a hands-free control surface that is as fast as talking to a tower. AiRTraffic Control is a thin ATC layer: listen → parse → act → prove it in the audit log.
 
 ## Speechmatics (required path)
 
@@ -30,7 +30,7 @@ Optional **text fallback** (`/api/command/text`) exists for demos without a mic.
 ## Quick start
 
 ```bash
-cd /Users/simeong/Projects/aerovoice-flight-controller   # or your clone
+cd /Users/simeong/Projects/airtraffic-control   # or your clone
 ./start.sh
 # open http://127.0.0.1:8765
 ```

@@ -1,6 +1,6 @@
 """Stub: Mac / God Mode adapter interface (for later integration).
 
-This module documents how AeroVoice will talk to real agent fleets
+This module documents how AiRTraffic Control will talk to real agent fleets
 (e.g. Signell workers, Cursor agents, local God Mode processes) without
 implementing the production control plane yet.
 

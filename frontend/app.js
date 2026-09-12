@@ -1,5 +1,5 @@
 /**
- * AeroVoice frontend
+ * AiRTraffic Control frontend
  * Mic → PCM16 → Speechmatics Realtime WS (jwt from backend)
  * On final AddTranscript → POST /api/command
  */

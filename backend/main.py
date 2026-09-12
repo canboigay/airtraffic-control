@@ -1,4 +1,4 @@
-"""AeroVoice Flight Controller — FastAPI backend."""
+"""AiRTraffic Control — FastAPI backend."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
     audit_log.record("system.stop", source="system")
 
 
-app = FastAPI(title="AeroVoice Flight Controller", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="AiRTraffic Control", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -74,7 +74,7 @@ class TextCommandRequest(BaseModel):
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "service": "aerovoice-flight-controller"}
+    return {"ok": True, "service": "airtraffic-control"}
 
 
 @app.post("/api/speechmatics/token")

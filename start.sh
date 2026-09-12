@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AeroVoice Flight Controller — boot backend + frontend + demo workers
+# AiRTraffic Control — boot backend + frontend + demo workers
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -70,6 +70,6 @@ if [[ -z "${SPEECHMATICS_API_KEY:-}" ]]; then
   echo "[start] Text fallback and worker controls still work."
 fi
 
-echo "[start] AeroVoice at http://${HOST}:${PORT}"
+echo "[start] AiRTraffic Control at http://${HOST}:${PORT}"
 echo "[start] Demo workers spawn on API startup (log-spam, fake-build, fake-research)"
 exec python -m uvicorn backend.main:app --host "$HOST" --port "$PORT"
