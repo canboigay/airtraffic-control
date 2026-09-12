@@ -131,7 +131,7 @@ function rmsEnergy(float32Array) {
   return Math.sqrt(sum / Math.max(1, n));
 }
 
-async function speakTower(text) {
+async function speakTower(text, opts = {}) {
   if (!text) return;
   const now = Date.now();
   if (text === lastSpokenText && now - lastSpokenAt < 1800) return;
@@ -144,7 +144,9 @@ async function speakTower(text) {
   speaking = true;
   bargeHoldUntil = Date.now() + 350;
 
-  if (!USE_NEURAL_TTS) {
+  // Fast fleet replies: browser TTS (snappy). Chat / long replies: neural.
+  const preferBrowser = !!(opts && (opts.fastPath || opts.browser));
+  if (!USE_NEURAL_TTS || preferBrowser) {
     speakBrowser(text, gen);
     return;
   }
@@ -162,7 +164,7 @@ async function speakTower(text) {
       const url = URL.createObjectURL(blob);
       towerAudioUrl = url;
       const audio = new Audio(url);
-      audio.playbackRate = 1.0;
+      audio.playbackRate = 1.12;
       towerAudio = audio;
       audio.onended = () => {
         if (gen !== speakGen) return;
@@ -219,7 +221,7 @@ function speakBrowser(text, gen) {
   }
   try { window.speechSynthesis.cancel(); } catch (_) {}
   const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.02;
+  u.rate = 1.14;
   u.pitch = 1.0;
   u.volume = 1.0;
   const prefer = pickVoice();
@@ -379,7 +381,7 @@ async function handleFinalTranscript(text) {
     pushTowerHistory(text, data);
     if (els.final) els.final.textContent = text;
     if (data && data.spoken_reply) {
-      speakTower(data.spoken_reply);
+      speakTower(data.spoken_reply, { fastPath: !!data.fast_path });
     }
     await refreshAll();
   } catch (e) {
@@ -390,7 +392,7 @@ async function handleFinalTranscript(text) {
   }
 }
 
-function startSpeechmaticsSession(jwt) {
+function startSpeechmaticsSession(jwt, wsUrl) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const done = (fn, arg) => {
@@ -400,7 +402,7 @@ function startSpeechmaticsSession(jwt) {
       fn(arg);
     };
 
-    const url = `wss://eu.rt.speechmatics.com/v2?jwt=${encodeURIComponent(jwt)}`;
+    const url = wsUrl || `wss://us.rt.speechmatics.com/v2?jwt=${encodeURIComponent(jwt)}`;
     ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
 
@@ -420,9 +422,9 @@ function startSpeechmaticsSession(jwt) {
           },
           transcription_config: {
             language: "en",
-            operating_point: "enhanced",
+            operating_point: "standard",
             enable_partials: true,
-            max_delay: 1.5,
+            max_delay: 0.8,
           },
         })
       );
@@ -461,7 +463,7 @@ function startSpeechmaticsSession(jwt) {
           finalDebounceTimer = null;
           finalDebounceBuf = "";
           handleFinalTranscript(snapshot);
-        }, 450);
+        }, 250);
       } else if (msg.message === "Error") {
         done(reject, new Error(msg.reason || "Speechmatics error"));
       }
@@ -564,7 +566,7 @@ async function startListening(ev) {
   if (els.label) els.label.textContent = "Connecting Speechmatics…";
   try {
     const token = await fetchJwt();
-    await startSpeechmaticsSession(token.jwt);
+    await startSpeechmaticsSession(token.jwt, token.ws_url);
     await attachMic(localStream);
   } catch (e) {
     showErr(e.message || String(e));
@@ -863,7 +865,7 @@ function afterUiAction(label, data, opts = {}) {
     spoken_reply: spoken || label,
     action,
   });
-  if (spoken) speakTower(spoken);
+  if (spoken) speakTower(spoken, { fastPath: true });
   if (els.cmdResult) els.cmdResult.textContent = spoken || JSON.stringify(data, null, 2);
 }
 
@@ -1174,7 +1176,7 @@ async function submitText(ev) {
     showCommandResult(data, text);
     pushTowerHistory(text, data);
     if (els.final) els.final.textContent = text;
-    if (data && data.spoken_reply) speakTower(data.spoken_reply);
+    if (data && data.spoken_reply) speakTower(data.spoken_reply, { fastPath: !!data.fast_path });
     if (els.textCmd) els.textCmd.value = "";
     await refreshAll();
   } catch (e) {

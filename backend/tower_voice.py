@@ -208,7 +208,7 @@ async def synthesize_mp3(text: str) -> bytes:
     text = sanitize_for_tts(text)
     import edge_tts
 
-    communicate = edge_tts.Communicate(text, TTS_VOICE, rate="+5%")
+    communicate = edge_tts.Communicate(text, TTS_VOICE, rate="+12%")
     buf = io.BytesIO()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":

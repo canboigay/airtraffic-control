@@ -19,9 +19,11 @@ This project uses **Speechmatics Realtime** properly — not browser `SpeechReco
    ```
 2. **Frontend** captures the mic, converts audio to **PCM16 @ 16 kHz**, and streams to:
    ```
-   wss://global.rt.speechmatics.com/v2?jwt=<token>
+   wss://us.rt.speechmatics.com/v2?jwt=<token>
    ```
 3. On final **`AddTranscript`**, the UI `POST`s the text to `/api/command`, which parses and executes.
+
+**Latency harden (voice):** US RT region, `operating_point=standard` + `max_delay≈0.8`, final-transcript debounce ~250ms, browser TTS for fast-path fleet replies (neural TTS +12% for chat).
 
 Optional **text fallback** (`/api/command/text`) exists for demos without a mic. It is not the primary ASR path.
 
