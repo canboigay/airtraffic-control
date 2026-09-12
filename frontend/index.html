@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta http-equiv="Cache-Control" content="no-store" />
   <title>AiRTraffic Control</title>
-  <link rel="stylesheet" href="/static/style.css?v=session-sheet1" />
+  <link rel="stylesheet" href="/static/style.css?v=session-sheet2" />
 </head>
 <body>
   <div class="app">
@@ -116,7 +116,7 @@
             <h2 id="sessionTitle">—</h2>
             <div class="session-badges" id="sessionBadges"></div>
           </div>
-          <button id="btnCloseSession" class="btn sm" type="button" aria-label="Close session panel">Close</button>
+          <button id="btnCloseSession" class="btn sm ghost" type="button" aria-label="Close session panel">Close</button>
         </header>
         <div class="session-meta" id="sessionMeta"></div>
         <div class="session-actions" id="sessionActions"></div>
@@ -130,7 +130,7 @@
           <pre class="worker-live-log session-live-log" id="sessionLiveLog" data-live-log="">Connecting…</pre>
           <div class="steer-inline" id="sessionSteerWrap">
             <input type="text" id="sessionSteerInput" placeholder="Steer prompt…" autocomplete="off" />
-            <button type="button" class="btn sm primary" id="btnSessionSteer">Send</button>
+            <button type="button" class="btn primary" id="btnSessionSteer">Send</button>
           </div>
         </div>
         <p class="session-focus-hint">Voice &amp; text while open resolve to this worker when you say “it” / “this session”.</p>
@@ -176,6 +176,6 @@
       </section>
     </div>
   </div>
-  <script src="/static/app.js?v=session-sheet1"></script>
+  <script src="/static/app.js?v=session-sheet2"></script>
 </body>
 </html>

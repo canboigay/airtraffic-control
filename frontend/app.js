@@ -1566,7 +1566,7 @@ function wire() {
 
   refreshAll();
   setInterval(refreshAll, 3000);
-  console.info("[ATC] UI wired (session-sheet1)");
+  console.info("[ATC] UI wired (session-sheet2)");
 }
 
 if (document.readyState === "loading") {
