@@ -59,6 +59,8 @@ let redirectOpenId = null;
 let demoOnly = true;
 let liveLogPollId = null;
 const liveLogScroll = {}; // id -> stickToBottom
+/** After UI/voice steer: follow live transcript in expand pane. id -> {until, prompt, lines} */
+const steerFollow = {};
 const expandedWorkerIds = new Set(JSON.parse(localStorage.getItem("atcExpandedWorkers") || "[]"));
 let lastWorkers = [];
 
@@ -383,6 +385,17 @@ async function handleFinalTranscript(text) {
     if (els.final) els.final.textContent = text;
     if (data && data.spoken_reply) {
       speakTower(data.spoken_reply, { fastPath: !!data.fast_path });
+    }
+    if (
+      data &&
+      (data.action === "steer_prompt" ||
+        (data.result && data.result.action === "steer_prompt"))
+    ) {
+      const wid =
+        data.worker_id ||
+        (data.result && data.result.worker_id) ||
+        (data.steer_prompt && data.steer_prompt.worker_id);
+      if (wid) beginSteerFollow(wid, data.target || text);
     }
     await refreshAll();
   } catch (e) {
@@ -741,8 +754,35 @@ function ensureWorkerLivePane(row, w) {
 
 function leftOffTitle(w) {
   const src = (w.source || "").toLowerCase();
+  if (steerFollow[w.id] && Date.now() < steerFollow[w.id].until) return "Live stream";
   if (src === "session" || src === "cli") return "Left off";
   return "Live log";
+}
+
+function beginSteerFollow(id, prompt) {
+  if (!id) return;
+  expandedWorkerIds.add(id);
+  persistExpandedWorkers();
+  steerFollow[id] = {
+    until: Date.now() + 180000, // 3 min live follow
+    prompt: prompt || "",
+    lines: 80,
+  };
+  const pre = document.querySelector(`[data-live-log="${CSS.escape(id)}"]`);
+  if (pre) {
+    const banner = `>>> steered: ${prompt}\n… waiting for live reply …`;
+    pre.textContent = banner;
+    liveLogScroll[id] = true;
+  }
+  bumpLiveLogPolling();
+  renderWorkers(lastWorkers || []);
+}
+
+function pruneSteerFollow() {
+  const now = Date.now();
+  for (const id of Object.keys(steerFollow)) {
+    if (!steerFollow[id] || now >= steerFollow[id].until) delete steerFollow[id];
+  }
 }
 
 async function sendSteerPrompt(id, inputEl) {
@@ -755,9 +795,11 @@ async function sendSteerPrompt(id, inputEl) {
       method: "auto",
     });
     if (input) input.value = "";
+    beginSteerFollow(id, prompt);
     afterUiAction(`steer ${id}`, data, {
       spoken: data.spoken_reply || data.steer_prompt?.summary || "Prompt sent.",
       action: "steer_prompt",
+      silent: true,
     });
     await refreshWorkers().catch(() => {});
     tickLiveLogs();
@@ -765,6 +807,7 @@ async function sendSteerPrompt(id, inputEl) {
     afterUiAction(`steer ${id}`, {}, {
       spoken: e.message || String(e),
       action: "steer_prompt",
+      silent: true,
     });
   }
 }
@@ -948,7 +991,12 @@ function afterUiAction(label, data, opts = {}) {
     spoken_reply: spoken || label,
     action,
   });
-  if (spoken) speakTower(spoken, { fastPath: true });
+  const silent =
+    opts.silent === true ||
+    (data && data.speak === false) ||
+    action === "steer_prompt";
+  // UI/text steers stay silent; voice path uses handleFinalTranscript → speakTower directly.
+  if (spoken && !silent) speakTower(spoken, { fastPath: true });
   if (els.cmdResult) els.cmdResult.textContent = spoken || JSON.stringify(data, null, 2);
 }
 
@@ -1025,7 +1073,10 @@ async function workerAction(act, id) {
 
 
 async function fetchWorkerLog(id) {
-  const res = await fetch(`/api/workers/${encodeURIComponent(id)}/inspect?lines=40`);
+  pruneSteerFollow();
+  const follow = steerFollow[id];
+  const nLines = follow ? Math.max(80, follow.lines || 80) : 40;
+  const res = await fetch(`/api/workers/${encodeURIComponent(id)}/inspect?lines=${nLines}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     return { text: data.detail || data.error || `inspect failed (${res.status})`, summary: "" };
@@ -1037,6 +1088,9 @@ async function fetchWorkerLog(id) {
   let text = arr.length ? arr.join("\n") : (data.detail || data.summary || "(no log output yet)");
   if (!arr.length && (left.note || data.note)) {
     text = left.note || data.note;
+  }
+  if (follow && follow.prompt) {
+    text = `>>> steered: ${follow.prompt}\n\n${text}`;
   }
   const metaBits = [];
   if (left.source_kind) metaBits.push(left.source_kind);
@@ -1114,10 +1168,31 @@ function toggleWorkerExpanded(id) {
   renderWorkers(lastWorkers || []);
 }
 
+function livePollMs() {
+  pruneSteerFollow();
+  return Object.keys(steerFollow).length ? 350 : 1000;
+}
+
+function bumpLiveLogPolling() {
+  if (liveLogPollId) {
+    clearInterval(liveLogPollId);
+    liveLogPollId = null;
+  }
+  startLiveLogPolling();
+}
+
 function startLiveLogPolling() {
   if (liveLogPollId) return;
   tickLiveLogs();
-  liveLogPollId = setInterval(() => { tickLiveLogs(); }, 1000);
+  const tick = () => {
+    tickLiveLogs().finally(() => {
+      // adapt interval if follow starts/stops
+      if (!liveLogPollId) return;
+      clearInterval(liveLogPollId);
+      liveLogPollId = setInterval(tick, livePollMs());
+    });
+  };
+  liveLogPollId = setInterval(tick, livePollMs());
 }
 
 function stopLiveLogPolling() {
@@ -1272,7 +1347,22 @@ async function submitText(ev) {
     showCommandResult(data, text);
     pushTowerHistory(text, data);
     if (els.final) els.final.textContent = text;
-    if (data && data.spoken_reply) speakTower(data.spoken_reply, { fastPath: !!data.fast_path });
+    const silentSteer =
+      data &&
+      (data.speak === false ||
+        data.action === "steer_prompt" ||
+        (data.result && data.result.action === "steer_prompt"));
+    if (data && data.spoken_reply && !silentSteer) {
+      speakTower(data.spoken_reply, { fastPath: !!data.fast_path });
+    }
+    // Text/UI steer → expand + live-follow the target worker when known
+    if (silentSteer) {
+      const wid =
+        data.worker_id ||
+        (data.result && data.result.worker_id) ||
+        (data.steer_prompt && data.steer_prompt.worker_id);
+      if (wid) beginSteerFollow(wid, data.target || text);
+    }
     if (els.textCmd) els.textCmd.value = "";
     await refreshAll();
   } catch (e) {

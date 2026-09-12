@@ -1083,7 +1083,7 @@ class GodModeAdapter:
                 pid=proc.pid,
                 cwd=snap.get("session_cwd"),
                 stack=self.stack,
-                lines=max(1, min(int(lines or 20), 40)),
+                lines=max(1, min(int(lines or 20), 120)),
             )
             lines_out = list(left.lines)
             if not lines_out and left.note:

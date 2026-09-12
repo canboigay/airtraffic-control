@@ -258,7 +258,13 @@ def steer_worker(worker_id: str, body: SteerPromptRequest) -> dict[str, Any]:
         source="api",
     )
     spoken = (result.get("steer_prompt") or {}).get("summary") or "Prompt queued."
-    return {**result, "spoken_reply": spoken, "action": "steer_prompt"}
+    # UI/API steer is silent — frontend must not TTS unless voice path asked.
+    return {
+        **result,
+        "spoken_reply": spoken,
+        "action": "steer_prompt",
+        "speak": False,
+    }
 
 
 @app.get("/api/workers/{worker_id}/inspect")

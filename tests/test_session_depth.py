@@ -15,6 +15,7 @@ from backend.session_depth import (
     compute_activity_status,
     deliver_steer_prompt,
     find_claude_jsonl,
+    inject_tty_prompt,
     read_claude_left_off,
     write_steer_inbox,
 )
@@ -251,3 +252,73 @@ def test_registry_steer_prompt_allows_protected(tmp_path):
     out = reg.steer_prompt("claude-session-901", "ping", method="inbox")
     assert out["steer_prompt"]["ok"] is True
     assert out["steer_prompt"]["method"] == "inbox"
+
+
+def test_inject_tty_prompt_uses_tiocsti_and_cr(monkeypatch, tmp_path):
+    """Unanimous path: TIOCSTI keystrokes + CR Enter (agy/grok/god)."""
+    import backend.session_depth as sd
+
+    calls = []
+    fake_dev = tmp_path / "ttys999"
+    fake_dev.write_text("")
+
+    def fake_open(path, flags):
+        calls.append(("open", path, flags))
+        return 77
+
+    def fake_ioctl(fd, op, arg):
+        calls.append(("ioctl", fd, op, arg))
+
+    def fake_close(fd):
+        calls.append(("close", fd))
+
+    monkeypatch.setattr(sd.os, "open", fake_open)
+    monkeypatch.setattr(sd.os, "close", fake_close)
+    monkeypatch.setattr(sd.fcntl, "ioctl", fake_ioctl)
+    monkeypatch.setattr(sd, "Path", lambda *a, **k: fake_dev if a and str(a[0]).startswith("/dev") else Path(*a))
+
+    # Path("/dev") / t must resolve to fake — patch exists check via wrapping inject
+    real_path = sd.Path
+
+    class DevPath:
+        def __init__(self, *parts):
+            self._p = real_path(*parts) if parts else real_path()
+        def __truediv__(self, other):
+            if str(self._p) == "/dev" or str(self._p).endswith("/dev"):
+                return fake_dev
+            return DevPath(self._p / other)
+        def exists(self):
+            return True
+        def __str__(self):
+            return str(fake_dev)
+
+    monkeypatch.setattr(sd, "Path", DevPath)
+
+    inject_tty_prompt("ttys999", "hello agy")
+    ioctls = [c for c in calls if c[0] == "ioctl"]
+    chars = "".join(c[3] for c in ioctls)
+    assert chars == "hello agy\r"
+    assert chars.endswith("\r")
+    assert "\n" not in chars
+    assert any(c[0] == "close" for c in calls)
+
+
+def test_deliver_steer_marks_cr_submit(tmp_path):
+    seen = {}
+
+    def fake_inject(tty, prompt):
+        seen["tty"] = tty
+        seen["prompt"] = prompt
+
+    out = deliver_steer_prompt(
+        worker_id="agy-cli-1",
+        prompt="ping",
+        tty="ttys001",
+        method="auto",
+        inbox_root=tmp_path,
+        inject_fn=fake_inject,
+    )
+    assert out.ok and out.method == "inbox+tty"
+    assert out.submit == "cr+tiocsti"
+    assert "Enter" in out.summary
+    assert seen == {"tty": "ttys001", "prompt": "ping"}

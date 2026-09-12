@@ -6,9 +6,11 @@ only on explicit operator send (never auto).
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
+import termios
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -61,6 +63,7 @@ class SteerDelivery:
     error: str | None = None
     worker_id: str | None = None
     session_id: str | None = None
+    submit: str | None = None  # e.g. "cr+tiocsti" when keystroke Enter sent
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +75,7 @@ class SteerDelivery:
             "error": self.error,
             "worker_id": self.worker_id,
             "session_id": self.session_id,
+            "submit": self.submit,
         }
 
 
@@ -201,8 +205,8 @@ def _message_text(obj: dict[str, Any]) -> str | None:
     text = re.sub(r"\s+", " ", (text or "")).strip()
     if not text:
         return None
-    if len(text) > 240:
-        text = text[:237] + "..."
+    if len(text) > 600:
+        text = text[:597] + "..."
     label = "you" if role in {"user", "human"} else "assistant"
     return f"{label}: {text}"
 
@@ -516,7 +520,16 @@ def write_steer_inbox(
 
 
 def inject_tty_prompt(tty: str, prompt: str) -> None:
-    """Write prompt + newline to /dev/<tty>. Explicit send only — never auto."""
+    """Inject prompt as keystrokes into /dev/<tty>, then submit with CR (Enter).
+
+    Uses TIOCSTI so characters enter the TTY *input* queue (as if typed), not
+    merely written to the display. Submit is ASCII CR (\\r) — the Enter key —
+    because raw/TUI readers (agy, ink, etc.) often ignore a lone LF write and
+    leave the line half-entered.
+
+    Does not change termios/line discipline; only queues input chars. Explicit
+    send only — never auto.
+    """
     t = (tty or "").strip()
     if not t or t in {"?", "??", "-"}:
         raise ValueError("no tty for inject")
@@ -532,13 +545,25 @@ def inject_tty_prompt(tty: str, prompt: str) -> None:
     dev = Path("/dev") / t
     if not dev.exists():
         raise FileNotFoundError(f"tty device missing: {dev}")
-    data = (text + "\n").encode("utf-8")
-    # O_WRONLY | O_NOCTTY — do not take controlling terminal
-    fd = os.open(str(dev), os.O_WRONLY | getattr(os, "O_NOCTTY", 0))
+    # Enter = CR. Do not use LF-only: paste-without-submit on raw TUIs.
+    payload = text + "\r"
+    tiocsti = getattr(termios, "TIOCSTI", None)
+    if tiocsti is None:
+        raise RuntimeError("TIOCSTI unavailable — cannot inject keystrokes safely")
+    # RDWR | O_NOCTTY — need a live fd for ioctl; do not take controlling tty
+    fd = os.open(str(dev), os.O_RDWR | getattr(os, "O_NOCTTY", 0))
     try:
-        os.write(fd, data)
+        for ch in payload:
+            try:
+                fcntl.ioctl(fd, tiocsti, ch)
+            except OSError as e:
+                raise RuntimeError(
+                    f"TIOCSTI inject failed on {t} (partial input possible): {e}"
+                ) from e
     finally:
         os.close(fd)
+
+
 
 
 def deliver_steer_prompt(
@@ -600,9 +625,10 @@ def deliver_steer_prompt(
                 method="inbox+tty",
                 inbox_path=str(path),
                 tty=tty_n,
-                summary=f"prompt delivered to {tty_n} (inbox {path.name})",
+                summary=f"prompt+Enter delivered to {tty_n} (inbox {path.name})",
                 worker_id=worker_id,
                 session_id=session_id,
+                submit="cr+tiocsti",
             )
         except Exception as e:
             return SteerDelivery(
