@@ -104,8 +104,8 @@ function startSpeechmaticsSession(jwt) {
         return;
       }
       if (msg.message === "RecognitionStarted") {
-        setBadge("LIVE", "listening");
-        els.label.textContent = "LIVE — TOWER OPEN";
+        setBadge("Listening", "listening");
+        els.label.textContent = "Listening…";
         els.panel.classList.add("active");
         resolve();
       } else if (msg.message === "AddPartialTranscript") {
@@ -117,7 +117,7 @@ function startSpeechmaticsSession(jwt) {
         els.final.textContent = text;
         await handleFinalTranscript(text);
       } else if (msg.message === "Error") {
-        setBadge("FAULT", "error");
+        setBadge("Error", "error");
         els.label.textContent = msg.reason || "Speechmatics error";
         reject(new Error(msg.reason || "Speechmatics error"));
       }
@@ -181,7 +181,7 @@ async function startListening() {
   listening = true;
   els.btnListen.disabled = true;
   els.btnStop.disabled = false;
-  setBadge("LINK…", "idle");
+  setBadge("Connecting…", "idle");
   els.label.textContent = "Minting Speechmatics JWT…";
   els.final.textContent = "";
   els.partial.textContent = "";
@@ -190,7 +190,7 @@ async function startListening() {
     await startSpeechmaticsSession(token.jwt);
     await startMic();
   } catch (e) {
-    setBadge("FAULT", "error");
+    setBadge("Error", "error");
     els.label.textContent = e.message || String(e);
     listening = false;
     els.btnListen.disabled = false;
@@ -202,8 +202,8 @@ async function startListening() {
 function stopListening(sendEnd = true) {
   listening = false;
   els.panel.classList.remove("active");
-  els.label.textContent = "STANDBY — PRESS LISTEN";
-  setBadge("IDLE", "idle");
+  els.label.textContent = "Ready to listen";
+  setBadge("Idle", "idle");
   els.btnListen.disabled = false;
   els.btnStop.disabled = true;
   try {
