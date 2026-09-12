@@ -14,29 +14,48 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from backend.adapters.demo import DemoAdapter
+from backend.adapters.composite import build_fleet
 from backend.adapters.god_mode import GodModeAdapter
 from backend.audit import audit_log
-from backend.commands import command_to_dict, parse_command
+from backend.agent import run_tower_agent
+from backend.session_memory import tower_memory
+from backend.tower_voice import sanitize_for_tts, synthesize_mp3
 from backend.registry import CONFIRM_PHRASE, Registry
 from backend.speechmatics import mint_rt_jwt
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
-demo_adapter = DemoAdapter()
-registry = Registry(demo_adapter)
+_fleet = build_fleet()
+ADAPTER_MODE = _fleet.mode
+demo_adapter = _fleet.demo
+god_adapter = _fleet.god
+registry = Registry(_fleet.adapter)
 
 # Pending kill target for confirm-without-name flow
 _pending_kill_worker: str | None = None
 
 
+def _set_pending(wid: str | None) -> None:
+    global _pending_kill_worker
+    _pending_kill_worker = wid
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    demo_adapter.start_all()
-    audit_log.record("system.start", detail={"workers": [w["id"] for w in registry.list_workers()]}, source="system")
+    if demo_adapter is not None:
+        demo_adapter.start_all()
+    audit_log.record(
+        "system.start",
+        detail={
+            "adapter_mode": ADAPTER_MODE,
+            "workers": [w["id"] for w in registry.list_workers()],
+        },
+        source="system",
+    )
     yield
-    demo_adapter.shutdown_all()
+    if demo_adapter is not None:
+        demo_adapter.shutdown_all()
     audit_log.record("system.stop", source="system")
 
 
@@ -74,7 +93,12 @@ class TextCommandRequest(BaseModel):
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "service": "airtraffic-control"}
+    return {
+        "ok": True,
+        "service": "airtraffic-control",
+        "adapter_mode": ADAPTER_MODE,
+        "adapter": ADAPTER_MODE,
+    }
 
 
 @app.post("/api/speechmatics/token")
@@ -190,121 +214,139 @@ def redirect_worker(worker_id: str, body: RedirectRequest) -> dict[str, Any]:
     return result
 
 
+@app.post("/api/workers/{worker_id}/restart")
+def restart_worker(worker_id: str) -> dict[str, Any]:
+    try:
+        result = registry.restart(worker_id)
+    except (KeyError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    audit_log.record(
+        "restart",
+        worker_id=worker_id,
+        before=result["before"],
+        after=result["after"],
+        source="api",
+    )
+    return result
+
+
+
+
+@app.get("/api/workers/{worker_id}/inspect")
+def inspect_worker(worker_id: str, lines: int = 20) -> dict[str, Any]:
+    try:
+        result = registry.inspect_worker(worker_id, lines=lines)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    audit_log.record(
+        "inspect",
+        worker_id=result.get("worker_id") or worker_id,
+        detail={"lines": lines, "summary": result.get("summary")},
+        source="api",
+    )
+    return result
+
+
+@app.post("/api/fleet/pause_all")
+def pause_all_workers() -> dict[str, Any]:
+    result = registry.pause_all()
+    audit_log.record(
+        "pause_all",
+        detail={"paused_count": result.get("paused_count")},
+        source="api",
+    )
+    return result
+
+
+@app.post("/api/fleet/resume_all")
+def resume_all_workers() -> dict[str, Any]:
+    result = registry.resume_all()
+    audit_log.record(
+        "resume_all",
+        detail={"resumed_count": result.get("resumed_count")},
+        source="api",
+    )
+    return result
+
 @app.get("/api/audit")
 def get_audit(limit: int = 50) -> dict[str, Any]:
     return {"entries": audit_log.list(limit=limit)}
 
 
 @app.get("/api/adapters/god-mode")
-def god_mode_stub() -> dict[str, Any]:
-    return GodModeAdapter().describe_interface()
+def god_mode_info() -> dict[str, Any]:
+    ga = god_adapter if god_adapter is not None else GodModeAdapter()
+    info = ga.describe_interface()
+    info["adapter_mode"] = ADAPTER_MODE
+    return info
 
 
-def _execute_parsed(cmd, source: str) -> dict[str, Any]:
-    global _pending_kill_worker
-    action = cmd.action
 
-    if action == "status":
-        summary = registry.status_summary()
-        audit_log.record("status", detail=summary, source=source)
-        return {"ok": True, "action": "status", "result": summary}
 
-    if action == "confirm_kill":
-        wid = _pending_kill_worker
-        if not wid:
-            return {
-                "ok": False,
-                "action": "confirm_kill",
-                "error": "No kill armed. Say kill <worker> first.",
-            }
-        try:
-            result = registry.execute_kill(wid, CONFIRM_PHRASE)
-        except PermissionError as e:
-            audit_log.record("kill.denied", worker_id=wid, detail={"reason": str(e)}, source=source)
-            return {"ok": False, "action": "confirm_kill", "error": str(e)}
-        _pending_kill_worker = None
-        audit_log.record(
-            "kill",
-            worker_id=wid,
-            before=result["before"],
-            after=result["after"],
-            detail={"confirmed": True, "transcript": cmd.raw},
-            source=source,
-        )
-        return {"ok": True, "action": "kill", "result": result}
+@app.get("/api/memory")
+def get_memory() -> dict[str, Any]:
+    """Recent tower dialogue (anaphora context)."""
+    return tower_memory.snapshot()
 
-    if action == "kill":
-        result = registry.request_kill(cmd.worker_id)  # type: ignore[arg-type]
-        _pending_kill_worker = result["worker_id"]
-        audit_log.record(
-            "kill.arm",
-            worker_id=result["worker_id"],
-            before=result["before"],
-            detail={"confirm_phrase": CONFIRM_PHRASE, "transcript": cmd.raw},
-            source=source,
-        )
-        return {"ok": True, "action": "kill.arm", "result": result}
 
-    if action == "pause":
-        result = registry.pause(cmd.worker_id)  # type: ignore[arg-type]
-        audit_log.record(
-            "pause",
-            worker_id=cmd.worker_id,
-            before=result["before"],
-            after=result["after"],
-            detail={"transcript": cmd.raw},
-            source=source,
-        )
-        return {"ok": True, "action": "pause", "result": result}
-
-    if action == "resume":
-        result = registry.resume(cmd.worker_id)  # type: ignore[arg-type]
-        audit_log.record(
-            "resume",
-            worker_id=cmd.worker_id,
-            before=result["before"],
-            after=result["after"],
-            detail={"transcript": cmd.raw},
-            source=source,
-        )
-        return {"ok": True, "action": "resume", "result": result}
-
-    if action == "redirect":
-        result = registry.redirect(cmd.worker_id, cmd.target or "")  # type: ignore[arg-type]
-        audit_log.record(
-            "redirect",
-            worker_id=cmd.worker_id,
-            before=result["before"],
-            after=result["after"],
-            detail={"target": cmd.target, "transcript": cmd.raw},
-            source=source,
-        )
-        return {"ok": True, "action": "redirect", "result": result}
-
-    return {"ok": False, "action": "unknown", "error": f"Could not parse: {cmd.raw}", "parsed": command_to_dict(cmd)}
+@app.post("/api/memory/clear")
+def clear_memory() -> dict[str, Any]:
+    tower_memory.clear()
+    return {"ok": True, "cleared": True}
 
 
 @app.post("/api/command")
 def voice_command(body: CommandRequest) -> dict[str, Any]:
-    cmd = parse_command(body.transcript)
-    if cmd is None:
-        raise HTTPException(status_code=400, detail="empty transcript")
     try:
-        return _execute_parsed(cmd, body.source)
+        return run_tower_agent(
+            body.transcript,
+            registry=registry,
+            audit_log=audit_log,
+            get_pending=lambda: _pending_kill_worker,
+            set_pending=lambda wid: _set_pending(wid),
+            confirm_phrase=CONFIRM_PHRASE,
+            source=body.source,
+            memory=tower_memory,
+        )
     except (KeyError, RuntimeError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.post("/api/command/text")
 def text_command(body: TextCommandRequest) -> dict[str, Any]:
-    """Optional text fallback for demos without mic."""
-    cmd = parse_command(body.text)
-    if cmd is None:
-        raise HTTPException(status_code=400, detail="empty text")
+    """Text or voice transcript → full tool-calling tower chatbot."""
     try:
-        return _execute_parsed(cmd, body.source)
+        return run_tower_agent(
+            body.text,
+            registry=registry,
+            audit_log=audit_log,
+            get_pending=lambda: _pending_kill_worker,
+            set_pending=lambda wid: _set_pending(wid),
+            confirm_phrase=CONFIRM_PHRASE,
+            source=body.source,
+            memory=tower_memory,
+        )
     except (KeyError, RuntimeError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+class TtsRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/tts")
+async def tts(body: TtsRequest):
+    """Neural TTS (edge-tts) for tower talk-back."""
+    from fastapi.responses import Response
+
+    text = sanitize_for_tts(body.text)
+    if not text:
+        raise HTTPException(status_code=400, detail="empty text")
+    try:
+        audio = await synthesize_mp3(text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"tts failed: {e}") from e
+    return Response(content=audio, media_type="audio/mpeg")
 
 
 # Static frontend
@@ -315,7 +357,13 @@ if FRONTEND.exists():
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(FRONTEND / "index.html")
+    return FileResponse(
+        FRONTEND / "index.html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 def run() -> None:

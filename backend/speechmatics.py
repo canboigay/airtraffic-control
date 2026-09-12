@@ -46,6 +46,6 @@ async def mint_rt_jwt(*, ttl_seconds: int = 3600) -> dict[str, Any]:
     return {
         "jwt": jwt,
         "ttl": ttl_seconds,
-        "ws_url": f"wss://global.rt.speechmatics.com/v2?jwt={jwt}",
+        "ws_url": f"wss://eu.rt.speechmatics.com/v2?jwt={jwt}",
         "region": "global",
     }

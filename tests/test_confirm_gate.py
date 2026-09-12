@@ -36,3 +36,10 @@ def test_parse_resume():
     cmd = parse_command("resume fake-build")
     assert cmd and cmd.action == "resume"
     assert cmd.worker_id == "fake-build"
+
+
+def test_parse_steer_god_rt():
+    cmd = parse_command("steer god-rt to brief")
+    assert cmd and cmd.action == "redirect"
+    assert cmd.worker_id == "god-rt"
+    assert cmd.target == "brief"

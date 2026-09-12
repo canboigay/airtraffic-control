@@ -3,94 +3,157 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store" />
   <title>AiRTraffic Control</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=livetail3" />
 </head>
 <body>
   <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <div class="logo" aria-hidden="true">ATC</div>
-        <div>
-          <h1>AiRTraffic Control</h1>
-          <p class="subtitle">Voice control plane for agent fleets</p>
+    <header class="top">
+      <div class="brand-block">
+        <div class="brand">
+          <h1>AiRTraffic</h1>
+          <span class="brand-sep" aria-hidden="true"></span>
+          <span class="brand-product">Control</span>
         </div>
+        <p class="purpose" id="purposeStrip">
+          <strong>AiRTraffic Control</strong> — Voice (and click) air-traffic control for AI agent fleets.
+          Listen → understand → act → prove it in the audit tape.
+        </p>
       </div>
-      <div class="top-right">
-        <span class="chip">Speechmatics Realtime</span>
-        <div id="connBadge" class="badge idle">Idle</div>
+      <div class="top-meta">
+        <span class="meta" id="adapterMeta">Local · …</span>
+        <div id="connBadge" class="pill idle">Voice idle</div>
       </div>
     </header>
 
-    <section class="hero" id="listenPanel">
-      <div class="hero-main">
-        <div class="status-row">
-          <span class="dot" id="liveDot"></span>
-          <div class="listen-label" id="listenLabel">Ready to listen</div>
-        </div>
-        <div class="transcript">
-          <div class="partial" id="partial"></div>
-          <div class="final" id="final"></div>
-        </div>
-        <div class="controls">
-          <button id="btnListen" class="btn btn-primary">Listen</button>
-          <button id="btnStop" class="btn btn-secondary" disabled>Stop</button>
-        </div>
-        <p class="hint">Try “status”, “pause fake build”, or “kill log spam” then “confirm kill”.</p>
-      </div>
-      <div class="hero-side" id="orb" aria-hidden="true">
-        <div class="meter">
-          <div class="meter-ring"></div>
-          <div class="meter-label">MIC</div>
-        </div>
+    <section class="cap-strip" aria-label="What you can control">
+      <span class="cap-label">What you can control</span>
+      <div class="caps">
+        <span class="chip">Pause</span>
+        <span class="chip">Resume</span>
+        <span class="chip chip-danger">Kill <em>(confirm)</em></span>
+        <span class="chip">Redirect</span>
+        <span class="chip">Live logs</span>
+        <span class="chip">Pause all / Resume all</span>
+        <span class="chip chip-accent">Voice or text</span>
       </div>
     </section>
 
-    <section class="grid">
-      <div class="card">
-        <div class="card-head">
-          <h2>Workers</h2>
-          <button id="btnRefresh" class="btn btn-ghost btn-sm">Refresh</button>
+    <section class="kpis" aria-label="Fleet summary">
+      <article class="kpi">
+        <span class="kpi-label">Running</span>
+        <span class="kpi-value" id="kpiRunning">—</span>
+      </article>
+      <article class="kpi">
+        <span class="kpi-label">Paused</span>
+        <span class="kpi-value" id="kpiPaused">—</span>
+      </article>
+      <article class="kpi">
+        <span class="kpi-label">Killed</span>
+        <span class="kpi-value" id="kpiKilled">—</span>
+      </article>
+      <article class="kpi kpi-accent">
+        <span class="kpi-label">Channel</span>
+        <span class="kpi-value kpi-channel" id="kpiChannel">Standby</span>
+      </article>
+    </section>
+
+    <section class="panel voice" id="listenPanel">
+      <div class="panel-label">Voice</div>
+      <div class="voice-row">
+        <div class="voice-main">
+          <div class="status-line">
+            <span class="orb" id="orb" aria-hidden="true"></span>
+            <div class="listen-label" id="listenLabel">Ready</div>
+          </div>
+          <div class="transcript">
+            <div class="partial" id="partial"></div>
+            <div class="final" id="final"></div>
+            <div class="tower-reply" id="towerReply"></div>
+          </div>
         </div>
-        <div class="table-wrap">
-          <table id="workersTable">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Status</th>
-                <th>PID</th>
-                <th>Target</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+        <div class="voice-actions">
+          <button id="btnListen" class="btn primary" type="button" >Listen</button>
+        </div>
+      </div>
+      <p class="hint">Stay open — say a clearance, Esc or tap tower reply to barge in.</p>
+    </section>
+
+    <section class="panel fleet-panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-label">Fleet</div>
+          <h2>Workers</h2>
+        </div>
+        <div class="fleet-toolbar" role="toolbar" aria-label="Fleet controls">
+          <button id="btnPauseAll" class="btn sm" type="button">Pause all</button>
+          <button id="btnResumeAll" class="btn sm" type="button">Resume all</button>
+          <button id="btnRefresh" class="btn sm" type="button">Refresh</button>
+          <label class="toggle" title="Hide God Mode PIDs from the product face">
+            <input type="checkbox" id="demoOnlyToggle" checked />
+            <span>Demo fleet only</span>
+          </label>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-head">
-          <h2>Audit</h2>
-          <span class="muted">Before → after</span>
+      <div class="workers-list" id="workersList" role="list"></div>
+      <div id="workersEmpty" class="empty" hidden>
+        No workers in view. Turn off <em>Demo fleet only</em> to see God Mode PIDs, or start the server to spawn the demo fleet.
+      </div>
+
+      <aside class="inspect-drawer" id="inspectDrawer" hidden>
+        <div class="inspect-head">
+          <div>
+            <div class="panel-label">Inspect</div>
+            <h3 id="inspectTitle">—</h3>
+          </div>
+          <button id="btnCloseInspect" class="link" type="button">Close</button>
+        </div>
+        <p class="inspect-summary" id="inspectSummary"></p>
+        <pre class="inspect-log" id="inspectLog"></pre>
+      </aside>
+    </section>
+
+    <div class="split split-3">
+      <section class="panel" id="towerHistoryPanel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-label">Tower</div>
+            <h2>Command history</h2>
+          </div>
+          <button id="btnClearTower" class="link" type="button">Clear</button>
+        </div>
+        <ul id="towerHistory" class="tower-history"></ul>
+        <div id="towerHistoryEmpty" class="empty">Tower turns (voice, text, or click) appear here this session.</div>
+      </section>
+
+      <section class="panel" id="audit">
+        <div class="panel-head">
+          <div>
+            <div class="panel-label">Audit</div>
+            <h2>Prove-it tape</h2>
+          </div>
         </div>
         <ul id="auditList" class="audit"></ul>
-      </div>
-    </section>
+        <div id="auditEmpty" class="empty">Actions show before → after receipts here.</div>
+      </section>
 
-    <section class="card">
-      <div class="card-head">
-        <h2>Command</h2>
-        <span class="muted">Text fallback</span>
-      </div>
-      <form id="textForm" class="command-row">
-        <input id="textCmd" type="text" placeholder="Enter a command…" autocomplete="off" spellcheck="false" />
-        <button type="submit" class="btn btn-primary btn-sm">Send</button>
-      </form>
-      <pre id="cmdResult" class="result"></pre>
-    </section>
+      <section class="panel" id="command">
+        <div class="panel-head">
+          <div>
+            <div class="panel-label">Command</div>
+            <h2>Text fallback</h2>
+          </div>
+        </div>
+        <form id="textForm" class="cmd">
+          <input id="textCmd" type="text" placeholder="pause log spam · kill build · status…" autocomplete="off" spellcheck="false" />
+          <button type="submit" class="btn primary" id="btnSend">Send</button>
+        </form>
+        <pre id="cmdResult" class="result"></pre>
+      </section>
+    </div>
   </div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=livetail3"></script>
 </body>
 </html>

@@ -7,8 +7,42 @@ cd "$ROOT"
 
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8765}"
+# hybrid = demo workers + discovered God Mode stack processes (default for local)
+export ATC_ADAPTER="${ATC_ADAPTER:-hybrid}"
 
 # Load Speechmatics key from Mac Keychain into .env without echoing the value
+
+load_llm_keys() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return 0
+  fi
+  if ! command -v security >/dev/null 2>&1; then
+    return 0
+  fi
+  touch .env
+  local key
+  if key="$(security find-generic-password -s god-mode -a openrouter -w 2>/dev/null)"; then
+    if [[ -n "$key" ]]; then
+      grep -v '^OPENROUTER_API_KEY=' .env > .env.tmp || true
+      mv .env.tmp .env
+      printf 'OPENROUTER_API_KEY=%s
+' "$key" >> .env
+      unset key
+      echo "[start] Loaded OPENROUTER_API_KEY from Keychain"
+    fi
+  fi
+  if key="$(security find-generic-password -s god-mode -a deepseek -w 2>/dev/null)"; then
+    if [[ -n "$key" ]]; then
+      grep -v '^DEEPSEEK_API_KEY=' .env > .env.tmp || true
+      mv .env.tmp .env
+      printf 'DEEPSEEK_API_KEY=%s
+' "$key" >> .env
+      unset key
+      echo "[start] Loaded DEEPSEEK_API_KEY from Keychain"
+    fi
+  fi
+}
+
 load_keychain_key() {
   if [[ "$(uname -s)" != "Darwin" ]]; then
     return 0
@@ -52,6 +86,7 @@ ensure_venv() {
 }
 
 load_keychain_key
+load_llm_keys
 ensure_venv
 
 mkdir -p logs
@@ -71,5 +106,11 @@ if [[ -z "${SPEECHMATICS_API_KEY:-}" ]]; then
 fi
 
 echo "[start] AiRTraffic Control at http://${HOST}:${PORT}"
-echo "[start] Demo workers spawn on API startup (log-spam, fake-build, fake-research)"
+echo "[start] Adapter mode: ${ATC_ADAPTER} (local=God Mode discovery, demo=3 fake workers, hybrid=both)"
+if [[ "${ATC_ADAPTER}" == "demo" || "${ATC_ADAPTER}" == "hybrid" ]]; then
+  echo "[start] Demo workers spawn on API startup (log-spam, fake-build, fake-research)"
+fi
+if [[ "${ATC_ADAPTER}" == "local" || "${ATC_ADAPTER}" == "hybrid" ]]; then
+  echo "[start] Discovering God Mode stack processes under ${GOD_STACK:-/Users/simeong/local-claude-offline-stack}"
+fi
 exec python -m uvicorn backend.main:app --host "$HOST" --port "$PORT"

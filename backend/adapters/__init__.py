@@ -1,1 +1,1 @@
-"""Worker adapters: demo (local processes) and future God Mode / Mac agents."""
+"""Worker adapters: demo processes, live God Mode discovery, and hybrid fleet."""
