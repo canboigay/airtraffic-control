@@ -967,23 +967,35 @@ class GodModeAdapter:
 
 
     def inspect_worker(self, worker_id: str, lines: int = 20) -> dict:
-        """Best-effort log tail for discovered processes."""
+        """Best-effort log tail for discovered processes.
+
+        Never fall back to a random stack `*.log` (that glued the same
+        god-red campaign tail onto agy / god-session / claude-session).
+        Only accept logs that clearly belong to this worker.
+        """
         wid, proc = self._get(worker_id)
         snap = self._to_worker(wid, proc).snapshot()
+        slug = slug_for(proc, stack=self.stack)
         candidates: list[Path] = []
-        # cmdline may point at a .log file
+        # cmdline may point at a .log file — only keep if path mentions pid/slug/wid
         for tok in _tokens(proc.command):
             if tok.endswith(".log") or "/logs/" in tok:
-                candidates.append(Path(tok))
-        # stack logs directory
+                path = Path(tok)
+                low = str(path).lower()
+                if (
+                    str(proc.pid) in low
+                    or slug.lower() in low
+                    or wid.lower() in low
+                    or (snap.get("session_id") and str(snap.get("session_id")).lower()[:8] in low)
+                ):
+                    candidates.append(path)
+        # stack logs — slug/pid only (NO bare *.log)
         stack_logs = Path(self.stack) / "logs"
         if stack_logs.is_dir():
-            slug = slug_for(proc, stack=self.stack)
-            for pattern in (f"{slug}*.log", f"*{proc.pid}*.log", "*.log"):
-                candidates.extend(sorted(stack_logs.glob(pattern))[:5])
-        # ATC demo leftover logs by slug
+            for pattern in (f"{slug}*.log", f"*{proc.pid}*.log", f"*{wid}*.log"):
+                candidates.extend(sorted(stack_logs.glob(pattern), key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)[:5])
+        # ATC logs by slug / wid only
         atc_logs = ROOT / "logs"
-        slug = slug_for(proc, stack=self.stack)
         for name in (f"{slug}.log", f"{wid}.log"):
             candidates.append(atc_logs / name)
 
