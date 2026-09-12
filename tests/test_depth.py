@@ -38,6 +38,13 @@ def test_parse_single_pause_still_works():
     assert cmd and cmd.action == "pause" and cmd.worker_id == "log-spam"
 
 
+def test_parse_pause_all_defaults_demo_scope():
+    cmd = parse_command("pause all")
+    assert cmd and cmd.action == "pause_all" and cmd.scope == "demo"
+    cmd = parse_command("resume all")
+    assert cmd and cmd.action == "resume_all" and cmd.scope == "demo"
+
+
 @pytest.fixture()
 def registry():
     adapter = DemoAdapter()

@@ -98,6 +98,9 @@ DENY_PREFIXES = (
     "/usr/sbin/",
     "/library/apple/",
 )
+# Live TUI session wrappers (basename only). god-rt / god-watch / god_gate.py
+# are NOT these — they keep their own names.
+SESSION_WRAPPER_NAMES = frozenset({"god", "claude"})
 SCRIPT_EXTS = {".py", ".zsh", ".sh", ".js", ".mjs", ".ts", ".cjs", ""}
 
 
@@ -160,6 +163,56 @@ def _is_scanner(command: str) -> bool:
     return False
 
 
+def is_god_session_wrapper(command: str) -> bool:
+    """True for live `zsh …/god` launchers and `claude` CLI god sessions.
+
+    Matches token basename only (`god`, `claude`) so `god-rt`, `god-watch`,
+    `god_gate.py`, and `god-mcp-hands` stay discoverable as workloads.
+    """
+    toks = _tokens(command)
+    if not toks:
+        return False
+    for t in toks:
+        if not t or t.startswith("-"):
+            continue
+        # `--settings=/path/claude` must not count; already skipped by '-'
+        name = Path(t).name.lower()
+        if name in SESSION_WRAPPER_NAMES:
+            return True
+    return False
+
+
+def descendant_pids(procs: Iterable[Proc], root_pid: int) -> list[int]:
+    """Descendant PIDs of root_pid (root itself excluded), cycle-safe."""
+    by_parent: dict[int, list[int]] = {}
+    for p in procs:
+        by_parent.setdefault(p.ppid, []).append(p.pid)
+    out: list[int] = []
+    stack = list(by_parent.get(root_pid, []))
+    seen: set[int] = set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen or pid == root_pid:
+            continue
+        seen.add(pid)
+        out.append(pid)
+        stack.extend(by_parent.get(pid, []))
+    return out
+
+
+def ancestor_is_protected_session(proc: Proc, procs: Iterable[Proc]) -> bool:
+    """True if any ancestor is a god/claude wrapper or other denied session."""
+    by_pid = {p.pid: p for p in procs}
+    seen: set[int] = set()
+    cur = by_pid.get(proc.ppid)
+    while cur is not None and cur.pid not in seen:
+        seen.add(cur.pid)
+        if is_god_session_wrapper(cur.command) or is_denied_cmdline(cur.command):
+            return True
+        cur = by_pid.get(cur.ppid)
+    return False
+
+
 def is_denied_cmdline(command: str) -> bool:
     low = command.lower()
     if any(s in low for s in DENY_SUBSTR):
@@ -174,6 +227,9 @@ def is_denied_cmdline(command: str) -> bool:
             return True
     # ATC's own API server (also covered by port 8765)
     if "uvicorn" in low and ("backend.main:app" in low or "airtraffic-control" in low):
+        return True
+    # Live god launcher + claude TUI sessions: listed never, signalled never
+    if is_god_session_wrapper(command):
         return True
     return False
 
@@ -426,6 +482,7 @@ class GodModeAdapter:
         self._note = (
             "Live God Mode adapter. Discovers user processes under GOD_STACK "
             "and named workloads (god-rt, campaign-harness, csuper, god-watch, mcp_hands). "
+            "Session wrappers (`…/god`, `claude` CLI) and Claude/Cursor/Grok GUI are denylisted. "
             "Redirect on God RT runs allowlisted quiet god-rt verbs (campaign_status/brief/list/ready/next/probe)."
         )
         self._last_steer: dict | None = None
@@ -451,7 +508,13 @@ class GodModeAdapter:
         )
         return assign_ids(selected, stack=self.stack)
 
-    def _to_worker(self, worker_id: str, proc: Proc, targets: dict[str, str] | None = None) -> Worker:
+    def _to_worker(
+        self,
+        worker_id: str,
+        proc: Proc,
+        targets: dict[str, str] | None = None,
+        all_procs: list[Proc] | None = None,
+    ) -> Worker:
         targets = targets if targets is not None else load_targets(self.targets_path)
         status = WorkerStatus.PAUSED if proc.stopped else WorkerStatus.RUNNING
         target = lookup_target(targets, worker_id, proc.pid)
@@ -460,6 +523,9 @@ class GodModeAdapter:
         detail_cmd = cmd if len(cmd) <= 160 else cmd[:157] + "..."
         state_letter = (proc.state or "?")[:1]
         detail = f"[{state_letter}] {detail_cmd}"
+        session_tree = False
+        if all_procs is not None:
+            session_tree = ancestor_is_protected_session(proc, all_procs)
         return Worker(
             id=worker_id,
             name=human_name(slug_for(proc, stack=self.stack), proc.command, proc.pid),
@@ -471,11 +537,23 @@ class GodModeAdapter:
             source="god",
             cmdline_short=cmd_short,
             uptime_sec=None,
+            session_tree=session_tree,
         )
 
     def list_workers(self) -> list[Worker]:
+        """Read-only discovery — never signals or changes process state."""
+        procs = self._snapshot_procs()
         targets = load_targets(self.targets_path)
-        return [self._to_worker(wid, proc, targets) for wid, proc in self._listed()]
+        selected = select_workers(
+            procs,
+            deny_pids=self._deny_pids(),
+            include_demo=self.include_demo,
+            stack=self.stack,
+        )
+        return [
+            self._to_worker(wid, proc, targets, all_procs=procs)
+            for wid, proc in assign_ids(selected, stack=self.stack)
+        ]
 
     def _require(self, worker_id: str) -> str:
         key = _norm(worker_id)
@@ -514,15 +592,19 @@ class GodModeAdapter:
                 return id_, proc
         raise KeyError(f"unknown worker: {worker_id}")
 
-    def _guard(self, proc: Proc) -> None:
+    def _guard(self, proc: Proc, *, op: str = "control") -> None:
+        # SIGCONT is used to unstick trees; never refuse resume on denylist.
+        if op == "resume":
+            return
         if proc.pid in self._deny_pids() or is_denied_cmdline(proc.command):
             raise PermissionError(
-                f"refusing to control protected process pid={proc.pid}"
+                f"refusing to {op} protected process pid={proc.pid}"
             )
 
     def pause(self, worker_id: str) -> Worker:
+        """SIGSTOP the listed PID only — never the process group or wrappers."""
         wid, proc = self._get(worker_id)
-        self._guard(proc)
+        self._guard(proc, op="pause")
         if proc.stopped:
             return self._to_worker(wid, proc)
         try:
@@ -540,14 +622,24 @@ class GodModeAdapter:
         return worker
 
     def resume(self, worker_id: str) -> Worker:
+        """SIGCONT the worker and every descendant (heal leftover T children)."""
         wid, proc = self._get(worker_id)
-        self._guard(proc)
-        try:
-            os.kill(proc.pid, signal.SIGCONT)
-        except ProcessLookupError as e:
-            raise RuntimeError(f"{wid} is gone (pid={proc.pid})") from e
-        except PermissionError as e:
-            raise PermissionError(f"cannot resume {wid} (pid={proc.pid}): {e}") from e
+        self._guard(proc, op="resume")
+        tree = [proc.pid, *descendant_pids(self._snapshot_procs(), proc.pid)]
+        saw_root = False
+        for pid in tree:
+            try:
+                os.kill(pid, signal.SIGCONT)
+                if pid == proc.pid:
+                    saw_root = True
+            except ProcessLookupError as e:
+                if pid == proc.pid:
+                    raise RuntimeError(f"{wid} is gone (pid={proc.pid})") from e
+            except PermissionError as e:
+                if pid == proc.pid:
+                    raise PermissionError(f"cannot resume {wid} (pid={proc.pid}): {e}") from e
+        if not saw_root and not pid_exists(proc.pid):
+            raise RuntimeError(f"{wid} is gone (pid={proc.pid})")
         time.sleep(0.05)
         state = proc_state(proc.pid, self.user) or "S"
         refreshed = Proc(proc.pid, proc.ppid, state, proc.command, proc.user)
@@ -559,7 +651,7 @@ class GodModeAdapter:
 
     def kill(self, worker_id: str) -> Worker:
         wid, proc = self._get(worker_id)
-        self._guard(proc)
+        self._guard(proc, op="kill")
         old_pid = proc.pid
         # SIGKILL works on stopped processes; TERM may sit pending until CONT.
         try:

@@ -53,8 +53,11 @@ cp .env.example .env
 | Say | Effect |
 |-----|--------|
 | `status` | Fleet summary |
-| `pause fake build` | Pause worker (SIGUSR1) |
+| `pause fake build` | Pause demo worker (SIGUSR1) |
+| `pause all` / `hold the fleet` | Pause **demo workers only** — never live `god` / `claude` sessions |
+| `pause god-rt` / `pause all god` | Explicit God workload pause (wrappers still denylisted) |
 | `resume fake build` | Resume (or restart if dead) |
+| `resume all` | Resume **demo workers only** |
 | `redirect research to docs` | Set worker target |
 | `kill log spam` | **Arm** kill (does not kill yet) |
 | `confirm kill` | Execute armed kill (PID goes away) |
@@ -110,9 +113,11 @@ Default adapter mode is **`ATC_ADAPTER=hybrid`**: the three demo workers stay av
 - `local` — discovery only; demo workers are **not** spawned
 - `demo` — the original three fake workers only
 
-Protected processes are never listed or signalled: ATC's own uvicorn on `:8765`, anything listening on `:8088`/`:8089` (god proxy), Claude.app GUI/helpers, Cursor / Grok Bot agents, `loginwindow`, and system daemons.
+Protected processes are never listed or signalled: ATC's own uvicorn on `:8765`, anything listening on `:8088`/`:8089` (god proxy), Claude.app GUI/helpers, Cursor / Grok Bot agents, `loginwindow`, system daemons, and live TUI session wrappers (`zsh …/god`, `claude` CLI god sessions).
 
-Pause of a discovered PID is a real `SIGSTOP`; resume is `SIGCONT`. Restart respawns demo-owned workers only; for a discovered PID, restart resumes if paused or raises a clear error.
+`pause all` / `resume all` default to **demo workers only**. God Mode / claude session trees are excluded unless the supervisor says `pause god …` / `pause all god`. Pause of a discovered PID is a real `SIGSTOP` on that PID only (never the process group). Resume `SIGCONT`s the worker **and its descendants** so children are not left stopped. Restart respawns demo-owned workers only; for a discovered PID, restart resumes if paused or raises a clear error.
+
+Kill still requires `confirm kill`. GUI denylist and god/claude TUI wrappers cannot be armed. Demo and mcp-hands kills need an explicit worker id plus the confirm phrase.
 
 
 

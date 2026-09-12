@@ -45,7 +45,11 @@ Spoken replies MUST be plain speakable English for TTS:
 - no markdown, bullets, asterisks, code fences, or emoji
 - no newlines; one continuous paragraph
 After a single action: "{Name} {paused|resumed|killed}, pid {N}."
-Fleet-wide: pause_all / resume_all. Inspect: inspect_worker for log tails (summarize, don't dump).
+Fleet-wide: pause_all / resume_all default to DEMO workers only.
+Never fleet-pause live god/claude session wrappers. Say "pause god-rt" or
+"pause all god" only when the supervisor explicitly wants God workloads.
+Kill of god/claude TUI wrappers is refused; demo and mcp-hands still need confirm kill.
+Inspect: inspect_worker for log tails (summarize, don't dump).
 Steer: "{Name} steered to {verb}. {short summary}."
 """
 
@@ -213,16 +217,36 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "pause_all",
-            "description": "Pause all running workers. Skips already paused or killed.",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "description": "Pause running workers. Default scope=demo (hackathon workers only). Does NOT SIGSTOP God Mode / claude session trees. Use scope=god only when the supervisor explicitly says pause god / pause all god.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["demo", "god", "all"],
+                        "description": "demo (default) = fake workers only. god = discovered workloads, still excluding session wrappers. all = both.",
+                    }
+                },
+                "additionalProperties": False,
+            },
         },
     },
     {
         "type": "function",
         "function": {
             "name": "resume_all",
-            "description": "Resume all paused workers (restarts killed demo workers). Skips already running.",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "description": "Resume paused workers. Default scope=demo. God workers resume only with scope=god or all. Resume walks the process tree (SIGCONT children, not just the listed PID).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["demo", "god", "all"],
+                        "description": "demo (default) = fake workers only. god = discovered workloads. all = both.",
+                    }
+                },
+                "additionalProperties": False,
+            },
         },
     },
     {
@@ -400,19 +424,21 @@ def _exec_tool(
         return {"ok": True, "action": "inspect", "result": result}
 
     if name == "pause_all":
-        result = registry.pause_all()
+        scope = str(args.get("scope") or "demo")
+        result = registry.pause_all(scope=scope)
         audit_log.record(
             "pause_all",
-            detail={"paused_count": result.get("paused_count"), "transcript": heard},
+            detail={"paused_count": result.get("paused_count"), "scope": result.get("scope"), "transcript": heard},
             source=source,
         )
         return {"ok": True, "action": "pause_all", "result": result}
 
     if name == "resume_all":
-        result = registry.resume_all()
+        scope = str(args.get("scope") or "demo")
+        result = registry.resume_all(scope=scope)
         audit_log.record(
             "resume_all",
-            detail={"resumed_count": result.get("resumed_count"), "transcript": heard},
+            detail={"resumed_count": result.get("resumed_count"), "scope": result.get("scope"), "transcript": heard},
             source=source,
         )
         return {"ok": True, "action": "resume_all", "result": result}
@@ -521,6 +547,15 @@ def _spoken_from_tool(payload: dict[str, Any]) -> str:
         return f"{name} redirected to {tgt}."
     if action == "pause_all":
         n = int(result.get("paused_count") or 0)
+        scope = result.get("scope") or "demo"
+        skipped = result.get("skipped") or []
+        held = sum(
+            1
+            for s in skipped
+            if any(k in (s.get("reason") or "").lower() for k in ("god", "protected", "session tree", "excluded"))
+        )
+        if scope == "demo" and held:
+            return f"Paused {n} demo workers. God sessions left running."
         return f"Paused {n} workers."
     if action == "resume_all":
         n = int(result.get("resumed_count") or 0)
@@ -643,9 +678,9 @@ def _fast_fleet_action(
             return None
         tool, args = "redirect_worker", {"worker_id": wid, "target": cmd.target}
     elif action == "pause_all":
-        tool = "pause_all"
+        tool, args = "pause_all", {"scope": cmd.scope or "demo"}
     elif action == "resume_all":
-        tool = "resume_all"
+        tool, args = "resume_all", {"scope": cmd.scope or "demo"}
     elif action == "inspect":
         tool, args = "inspect_worker", {"worker_id": wid, "lines": int(cmd.lines or 20)}
     else:

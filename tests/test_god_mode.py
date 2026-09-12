@@ -14,10 +14,13 @@ from backend.adapters.demo import DemoAdapter
 from backend.adapters.god_mode import (
     GodModeAdapter,
     Proc,
+    ancestor_is_protected_session,
     assign_ids,
     classify_proc,
+    descendant_pids,
     human_name,
     is_denied_cmdline,
+    is_god_session_wrapper,
     proc_state,
     select_workers,
     slug_for,
@@ -55,6 +58,18 @@ CURSOR = _proc(400, "/Applications/Cursor.app/Contents/MacOS/Cursor")
 LOGIN = _proc(401, "/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow")
 SCANNER = _proc(402, f"rg -n mcp_hands {STACK}")
 PORT_8088 = _proc(80881, f"python {STACK}/god_proxy_handler.py")
+GOD_LAUNCHER = _proc(25189, f"zsh {STACK}/god")
+CLAUDE_CLI = _proc(
+    25362,
+    "claude --model claude-fable-auto --allow-dangerously-skip-permissions "
+    f"--settings={STACK}/profiles/quiet.json",
+    ppid=25189,
+)
+MCP_UNDER_GOD = _proc(
+    25668,
+    "/opt/homebrew/opt/python@3.14/bin/python -m mcp_hands.server --profile quiet",
+    ppid=25362,
+)
 
 
 def test_adapter_mode_defaults_hybrid(monkeypatch):
@@ -71,12 +86,21 @@ def test_denylist_cmdlines():
     assert is_denied_cmdline(UVICORN.command)
     assert is_denied_cmdline(CURSOR.command)
     assert is_denied_cmdline(LOGIN.command)
+    assert is_denied_cmdline(GOD_LAUNCHER.command)
+    assert is_denied_cmdline(CLAUDE_CLI.command)
+    assert is_god_session_wrapper(GOD_LAUNCHER.command)
+    assert is_god_session_wrapper(CLAUDE_CLI.command)
+    assert not is_god_session_wrapper(GOD_RT.command)
+    assert not is_god_session_wrapper(GOD_WATCH.command)
     assert not is_denied_cmdline(MCP_CHILD.command)
     assert not is_denied_cmdline(GOD_RT.command)
 
 
 def test_select_keeps_leaf_mcp_and_stack_workloads():
-    procs = [CLAUDE_HELPER, UV_PARENT, MCP_CHILD, GOD_RT, GOD_WATCH, CSUPER, LOG_SPAM, UVICORN, CURSOR, LOGIN, SCANNER]
+    procs = [
+        CLAUDE_HELPER, UV_PARENT, MCP_CHILD, GOD_RT, GOD_WATCH, CSUPER, LOG_SPAM,
+        UVICORN, CURSOR, LOGIN, SCANNER, GOD_LAUNCHER, CLAUDE_CLI, MCP_UNDER_GOD,
+    ]
     selected = select_workers(procs, deny_pids={10642, 80881}, include_demo=False, stack=STACK)
     pids = {p.pid for p in selected}
     assert 1317 in pids
@@ -90,6 +114,9 @@ def test_select_keeps_leaf_mcp_and_stack_workloads():
     assert 400 not in pids
     assert 401 not in pids
     assert 402 not in pids
+    assert 25189 not in pids  # zsh …/god wrapper
+    assert 25362 not in pids  # claude CLI session
+    assert 25668 in pids  # mcp-hands under session is listed but fleet-pause skipped
 
 
 def test_select_include_demo_and_port_denylist():
@@ -246,3 +273,36 @@ def test_live_adapter_lists_without_requiring_demo():
         assert w.pid
         assert "uvicorn" not in (w.detail or "").lower()
         assert "Claude.app" not in (w.detail or "")
+        cmd = w.cmdline_short or w.detail or ""
+        assert not is_god_session_wrapper(cmd)
+        assert is_denied_cmdline(cmd) is False
+
+
+def test_session_tree_and_descendants():
+    helper = _proc(201, "/usr/bin/sleep 9", ppid=12345)
+    assert descendant_pids([GOD_RT, helper], 12345) == [201]
+    assert ancestor_is_protected_session(MCP_UNDER_GOD, [GOD_LAUNCHER, CLAUDE_CLI, MCP_UNDER_GOD])
+    assert not ancestor_is_protected_session(GOD_RT, [GOD_RT, helper])
+
+
+def test_list_workers_does_not_signal(monkeypatch):
+    calls = []
+
+    def boom(pid, sig):
+        calls.append((pid, sig))
+        raise AssertionError("discovery must not signal")
+
+    monkeypatch.setattr(os, "kill", boom)
+    adapter = GodModeAdapter(
+        stack=STACK,
+        include_demo=False,
+        _procs=[GOD_RT, GOD_LAUNCHER, CLAUDE_CLI, MCP_UNDER_GOD],
+        _deny_pids=set(),
+    )
+    workers = adapter.list_workers()
+    ids = {w.id for w in workers}
+    assert "god-rt-12345" in ids
+    assert not any(w.id.startswith("god-25189") or "claude" in w.id for w in workers)
+    under = [w for w in workers if w.pid == 25668]
+    assert under and under[0].session_tree is True
+    assert calls == []

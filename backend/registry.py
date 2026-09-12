@@ -34,6 +34,7 @@ class Worker:
     uptime_sec: int | None = None
     cmdline_short: str | None = None
     source: str | None = None  # "demo" | "god"
+    session_tree: bool = False  # descendant of a live god/claude wrapper
 
     def snapshot(self) -> dict[str, Any]:
         d = asdict(self)
@@ -51,6 +52,49 @@ class WorkerAdapter(Protocol):
 
 
 CONFIRM_PHRASE = "confirm kill"
+FLEET_SCOPES = frozenset({"demo", "god", "all"})
+BARE_SESSION_NAMES = frozenset({"god", "claude", "godmode"})
+
+
+def _normalize_scope(scope: str | None) -> str:
+    s = (scope or "demo").strip().lower()
+    return s if s in FLEET_SCOPES else "demo"
+
+
+def _worker_source(w: dict[str, Any]) -> str:
+    return str(w.get("source") or "").strip().lower()
+
+
+def _scope_includes(scope: str, source: str) -> bool:
+    if scope == "all":
+        return True
+    if scope == "god":
+        return source == "god"
+    return source == "demo"
+
+
+def _is_protected_worker(w: dict[str, Any]) -> bool:
+    """GUI denylist + god/claude TUI wrappers. Do not use human name (false +)."""
+    try:
+        from backend.adapters.god_mode import is_denied_cmdline, is_god_session_wrapper
+    except Exception:
+        return False
+    for blob in (w.get("cmdline_short"), w.get("detail")):
+        if not blob:
+            continue
+        text = str(blob)
+        if is_god_session_wrapper(text) or is_denied_cmdline(text):
+            return True
+    return False
+
+
+def _kill_needs_explicit_id(requested: str, worker: dict[str, Any]) -> bool:
+    """Bare 'god' / 'claude' must not arm kill — require a pid-qualified id."""
+    raw = (requested or "").strip().lower()
+    compact = "".join(ch for ch in raw if ch.isalnum())
+    if compact in BARE_SESSION_NAMES:
+        return True
+    return False
 
 
 def write_target_file(worker_id: str, target: str, logs_dir: Path | None = None) -> Path:
@@ -133,6 +177,10 @@ class Registry:
 
     def pause(self, worker_id: str) -> dict[str, Any]:
         before = self.get(worker_id)
+        if before and _is_protected_worker(before):
+            raise PermissionError(
+                f"refusing to pause protected god/claude session {before.get('id')}"
+            )
         worker = self.adapter.pause(worker_id)
         return {"before": before, "after": worker.snapshot()}
 
@@ -141,13 +189,32 @@ class Registry:
         worker = self.adapter.resume(worker_id)
         return {"before": before, "after": worker.snapshot()}
 
-    def pause_all(self) -> dict[str, Any]:
-        """Pause every running (or redirected) worker; skip already paused/killed."""
+    def pause_all(self, scope: str = "demo") -> dict[str, Any]:
+        """Pause workers. Default scope is demo-only — never fleet-pause God sessions.
+
+        Skips protected god/claude wrappers and anyone under those session trees.
+        Explicit `pause <id>` still reaches a named god workload (not a wrapper).
+        """
+        scope = _normalize_scope(scope)
         paused: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         for w in self.list_workers():
             st = w.get("status")
+            src = _worker_source(w)
+            if _is_protected_worker(w):
+                skipped.append({"id": w["id"], "status": st, "reason": "protected god/claude session"})
+                continue
+            if w.get("session_tree"):
+                skipped.append({"id": w["id"], "status": st, "reason": "session tree (god/claude ancestor)"})
+                continue
+            if not _scope_includes(scope, src):
+                skipped.append({
+                    "id": w["id"],
+                    "status": st,
+                    "reason": f"{src or 'unknown'} worker excluded from {scope} fleet pause",
+                })
+                continue
             if st in {"paused", "killed"}:
                 skipped.append({"id": w["id"], "status": st, "reason": f"already {st}"})
                 continue
@@ -157,6 +224,7 @@ class Registry:
             except Exception as e:
                 errors.append({"id": w["id"], "error": str(e)})
         return {
+            "scope": scope,
             "paused_count": len(paused),
             "skipped_count": len(skipped),
             "error_count": len(errors),
@@ -165,21 +233,31 @@ class Registry:
             "errors": errors,
         }
 
-    def resume_all(self) -> dict[str, Any]:
-        """Resume paused workers; skip already running/killed as appropriate.
+    def resume_all(self, scope: str = "demo") -> dict[str, Any]:
+        """Resume paused workers in scope. Default is demo-only.
 
-        Killed demo workers are restarted via resume(); discovered god workers
-        that are killed are skipped (gone).
+        Adapter resume walks the descendant tree (SIGCONT children, not just the
+        discovered PID). Killed demo workers restart via resume(); killed god
+        workers are skipped (gone).
         """
+        scope = _normalize_scope(scope)
         resumed: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         for w in self.list_workers():
             st = w.get("status")
+            src = _worker_source(w)
+            if not _scope_includes(scope, src):
+                skipped.append({
+                    "id": w["id"],
+                    "status": st,
+                    "reason": f"{src or 'unknown'} worker excluded from {scope} fleet resume",
+                })
+                continue
             if st == "running":
                 skipped.append({"id": w["id"], "status": st, "reason": "already running"})
                 continue
-            if st == "killed" and w.get("source") == "god":
+            if st == "killed" and src == "god":
                 skipped.append({"id": w["id"], "status": st, "reason": "killed god worker"})
                 continue
             try:
@@ -188,6 +266,7 @@ class Registry:
             except Exception as e:
                 errors.append({"id": w["id"], "error": str(e)})
         return {
+            "scope": scope,
             "resumed_count": len(resumed),
             "skipped_count": len(skipped),
             "error_count": len(errors),
@@ -202,6 +281,15 @@ class Registry:
         before = self.get(wid)
         if not before:
             raise KeyError(f"unknown worker: {worker_id}")
+        if _is_protected_worker(before):
+            raise PermissionError(
+                f"refusing to kill protected god/claude session {wid}"
+            )
+        if _kill_needs_explicit_id(worker_id, before):
+            raise PermissionError(
+                f"kill of god/claude session requires an explicit id "
+                f"(e.g. {before.get('id')}), not {worker_id!r}"
+            )
         with self._lock:
             self._pending_kills[wid] = datetime.now(timezone.utc).isoformat()
         return {
@@ -226,6 +314,10 @@ class Registry:
                 )
             del self._pending_kills[wid]
         before = self.get(wid)
+        if before and _is_protected_worker(before):
+            raise PermissionError(
+                f"refusing to kill protected god/claude session {wid}"
+            )
         worker = self.adapter.kill(wid)
         return {"before": before, "after": worker.snapshot(), "confirmed": True}
 

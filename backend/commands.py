@@ -18,6 +18,7 @@ class ParsedCommand:
     # Memory / anaphora hints
     from_memory: bool = False
     memory_ref: str | None = None  # it|that|again|clarify
+    scope: str | None = None  # demo|god|all for pause_all / resume_all
 
 
 WORKER_ALIASES = {
@@ -42,6 +43,7 @@ WORKER_ALIASES = {
     "godrt": "god-rt",
     "god mode": "god-rt",
     "godmode": "god-rt",
+    "god": "god-rt",
     "mcp hands": "mcp-hands",
     "mcp-hands": "mcp-hands",
     "mcphands": "mcp-hands",
@@ -111,19 +113,37 @@ def parse_command(transcript: str) -> ParsedCommand | None:
     if text in {"confirm", "yes confirm", "yes kill", "do it", "affirmative", "confirmed"}:
         return ParsedCommand(action="confirm_kill", raw=raw, confirm_text="confirm kill")
 
-    # pause all / hold the fleet
-    if re.search(r"\bpause\s+all\b", text) or re.search(r"\bhold\s+(the\s+)?fleet\b", text):
-        return ParsedCommand(action="pause_all", raw=raw)
-    if text in {"pause all", "hold fleet", "hold the fleet"}:
-        return ParsedCommand(action="pause_all", raw=raw)
+    # pause all god / hold god fleet — explicit God workload fleet pause
+    if (
+        re.search(r"\bpause\s+all\s+god\b", text)
+        or re.search(r"\bpause\s+god\s+(all|fleet)\b", text)
+        or re.search(r"\bhold\s+(the\s+)?god\s+fleet\b", text)
+        or text in {"pause all god", "pause god all", "pause god fleet", "hold god fleet"}
+    ):
+        return ParsedCommand(action="pause_all", raw=raw, scope="god")
 
-    # resume all / wake everyone
+    # pause all / hold the fleet — demo workers only
+    if re.search(r"\bpause\s+all\b", text) or re.search(r"\bhold\s+(the\s+)?fleet\b", text):
+        return ParsedCommand(action="pause_all", raw=raw, scope="demo")
+    if text in {"pause all", "hold fleet", "hold the fleet"}:
+        return ParsedCommand(action="pause_all", raw=raw, scope="demo")
+
+    # resume all god
+    if (
+        re.search(r"\bresume\s+all\s+god\b", text)
+        or re.search(r"\bresume\s+god\s+(all|fleet)\b", text)
+        or re.search(r"\bwake\s+(all\s+)?god\b", text)
+        or text in {"resume all god", "resume god all", "wake god"}
+    ):
+        return ParsedCommand(action="resume_all", raw=raw, scope="god")
+
+    # resume all / wake everyone — demo workers only
     if (
         re.search(r"\bresume\s+all\b", text)
         or re.search(r"\bwake\s+(everyone|everybody|all)\b", text)
         or text in {"resume all", "wake everyone", "wake everybody"}
     ):
-        return ParsedCommand(action="resume_all", raw=raw)
+        return ParsedCommand(action="resume_all", raw=raw, scope="demo")
 
     # inspect / tail / what's X doing / status of X logs
     inspect_hit = False
@@ -298,4 +318,5 @@ def command_to_dict(cmd: ParsedCommand) -> dict[str, Any]:
         "lines": cmd.lines,
         "from_memory": cmd.from_memory,
         "memory_ref": cmd.memory_ref,
+        "scope": cmd.scope,
     }

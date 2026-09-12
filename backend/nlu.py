@@ -24,18 +24,20 @@ DEEPSEEK_MODEL = os.environ.get("ATC_DEEPSEEK_MODEL", "deepseek-chat")
 SYSTEM = """You map voice tower utterances to ONE JSON object. No markdown.
 
 Allowed actions only:
-status | pause | resume | kill | confirm_kill | redirect | clarify | unknown
+status | pause | resume | kill | confirm_kill | redirect | clarify | pause_all | resume_all | unknown
 
 Workers: use any worker id/name the supervisor says (demo: log-spam, fake-build, fake-research;
 discovered: mcp-hands-<pid>, god-rt-<pid>, etc.). Prefer the exact id when known.
 
 Schema:
-{"action":"status|pause|resume|kill|confirm_kill|redirect|unknown","worker_id":null|"string","target":null|"string"}
+{"action":"status|pause|resume|kill|confirm_kill|redirect|pause_all|resume_all|unknown","worker_id":null|"string","target":null|"string"}
 
 Understand any phrasing, slang, or indirect ask.
 confirm/yes/yep/do it/go ahead/affirmative → confirm_kill
 fleet health / what's running / sitrep → status
 pause/hold/freeze → pause (needs worker)
+pause all / hold the fleet → pause_all of DEMO workers only (never live god/claude sessions)
+pause god / pause god-rt → pause that God workload (explicit)
 resume/continue/unpause → resume (needs worker)
 kill/terminate/murder/shut down → kill (needs worker)
 redirect/send/point/steer … to/at → redirect (needs worker + target; God RT quiet verbs: campaign_status, brief, list, ready, next, probe)
@@ -62,7 +64,7 @@ def _extract_json(text: str) -> dict[str, Any] | None:
 
 def _from_dict(data: dict[str, Any], raw: str) -> ParsedCommand:
     action = str(data.get("action") or "unknown").strip().lower()
-    if action not in {"status", "pause", "resume", "kill", "confirm_kill", "redirect", "clarify", "unknown"}:
+    if action not in {"status", "pause", "resume", "kill", "confirm_kill", "redirect", "clarify", "pause_all", "resume_all", "unknown"}:
         action = "unknown"
     wid = data.get("worker_id")
     if wid is not None:
