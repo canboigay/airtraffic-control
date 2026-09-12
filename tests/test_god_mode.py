@@ -307,10 +307,10 @@ def test_list_workers_does_not_signal(monkeypatch):
     ids = {w.id for w in workers}
     assert "god-rt-12345" in ids
     assert "god-session-25189" in ids
-    assert "claude-session-25362" in ids
+    # claude under god launcher → merged into god-session
+    assert "claude-session-25362" not in ids
     by = {w.id: w for w in workers}
     assert by["god-session-25189"].protected is True
-    assert by["claude-session-25362"].protected is True
     under = [w for w in workers if w.pid == 25668]
     assert under and under[0].session_tree is True
     assert calls == []

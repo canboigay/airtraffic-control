@@ -204,6 +204,16 @@ class Registry:
         uniq = list(dict.fromkeys(fuzzy))
         if len(uniq) == 1:
             return uniq[0]
+        # After god+claude dedupe, only god-session remains; map bare
+        # "claude-session" / "claude session" to the single resumed god row.
+        if key in {"claude-session", "claude", "claudesession"} or key.startswith("claude-session"):
+            gods = [
+                w
+                for w in workers
+                if w.id.lower().startswith("god-session-") and getattr(w, "session_id", None)
+            ]
+            if len(gods) == 1:
+                return gods[0].id
         return None
 
     def pause(self, worker_id: str) -> dict[str, Any]:

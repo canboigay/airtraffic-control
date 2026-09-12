@@ -12,6 +12,8 @@ from backend.adapters.god_mode import GodModeAdapter, Proc
 from backend.commands import parse_command
 from backend.registry import Registry, WorkerStatus
 from backend.session_depth import (
+    _ITERM_APPLESCRIPT,
+    _TERMINAL_APPLESCRIPT,
     compute_activity_status,
     deliver_steer_prompt,
     find_claude_jsonl,
@@ -19,6 +21,7 @@ from backend.session_depth import (
     read_claude_left_off,
     write_steer_inbox,
 )
+from backend.adapters.god_mode import dedupe_god_claude_workers
 
 STACK = "/Users/simeong/local-claude-offline-stack"
 SID = "146e90ce-078b-4f95-9200-1a4d52322c0c"
@@ -153,18 +156,15 @@ def test_list_workers_idle_badge_and_child_session(tmp_path):
         targets_path=tmp_path / "t.json",
     )
     by_id = {w.id: w for w in adapter.list_workers()}
-    assert "claude-session-901" in by_id
-    cw = by_id["claude-session-901"]
-    assert cw.status in {WorkerStatus.IDLE, WorkerStatus.STALE}
-    assert cw.session_id == SID
-    assert cw.cpu_pct == 0.0
-
+    # Merged: prefer god-session, keep resume/tty/protected
+    assert "claude-session-901" not in by_id
+    assert "god-session-900" in by_id
     gw = by_id["god-session-900"]
     assert gw.protected is True
-    # god inherits child resume for transcript depth
     assert gw.session_id == SID
+    assert gw.status in {WorkerStatus.IDLE, WorkerStatus.STALE, WorkerStatus.RUNNING}
     assert "near resume" not in (gw.session_hint or "")
-    assert "resume 146e90ce" in (gw.session_hint or "")
+    assert "resume 146e90ce" in (gw.session_hint or "") or SID[:8] in (gw.session_hint or "")
 
 
 def test_inspect_session_uses_transcript_not_campaign(tmp_path, monkeypatch):
@@ -320,5 +320,126 @@ def test_deliver_steer_marks_cr_submit(tmp_path):
     )
     assert out.ok and out.method == "inbox+tty"
     assert out.submit == "cr+tiocsti"
+    assert out.delivered is True
     assert "Enter" in out.summary
     assert seen == {"tty": "ttys001", "prompt": "ping"}
+
+def test_applescript_templates_never_open_new_windows():
+    """HARD BAN: production AppleScript must not spawn Terminal windows/tabs."""
+    for label, script in (("Terminal", _TERMINAL_APPLESCRIPT), ("iTerm", _ITERM_APPLESCRIPT)):
+        low = script.lower()
+        assert "do script" not in low, label
+        assert "make new" not in low, label
+
+
+def test_deliver_steer_applescript_fallback_mocked(tmp_path):
+    """TIOCSTI fail → AppleScript mock success; no live osascript."""
+
+    def fail_tiocsti(tty, prompt):
+        raise PermissionError("TIOCSTI: Operation not permitted")
+
+    def fake_as(tty, prompt, app=None):
+        assert tty == "ttys002"
+        assert app == "Terminal.app"
+        return "cr+applescript-terminal"
+
+    out = deliver_steer_prompt(
+        worker_id="god-session-900",
+        prompt="status please",
+        session_id=SID,
+        tty="ttys002",
+        method="auto",
+        inbox_root=tmp_path,
+        inject_fn=fail_tiocsti,
+        applescript_fn=fake_as,
+        session_app="Terminal.app",
+    )
+    assert out.ok is True
+    assert out.delivered is True
+    assert out.method == "inbox+tty"
+    assert out.submit == "cr+applescript-terminal"
+    assert out.session_app == "Terminal.app"
+    data = json.loads(Path(out.inbox_path).read_text())
+    assert data["delivered"] is True
+
+
+def test_deliver_steer_inject_fail_surfaces_error(tmp_path):
+    """Both inject paths fail → ok=False, inbox kept, clear error (no window open)."""
+
+    def fail_tiocsti(tty, prompt):
+        raise PermissionError("TIOCSTI: Permission denied")
+
+    def fail_as(tty, prompt, app=None):
+        raise RuntimeError("no Terminal.app tab for ttys003")
+
+    out = deliver_steer_prompt(
+        worker_id="agy-cli-1",
+        prompt="ping",
+        tty="ttys003",
+        method="auto",
+        inbox_root=tmp_path,
+        inject_fn=fail_tiocsti,
+        applescript_fn=fail_as,
+    )
+    assert out.ok is False
+    assert out.delivered is False
+    assert out.method == "inbox"
+    assert out.inbox_path and Path(out.inbox_path).is_file()
+    assert "NOT submitted" in (out.summary or "")
+    assert "tiocsti" in (out.error or "").lower() or "Permission" in (out.error or "")
+
+
+def test_run_osascript_rejects_do_script(monkeypatch):
+    import backend.session_depth as sd
+
+    def boom(*a, **k):
+        raise AssertionError("subprocess must not run for banned script")
+
+    monkeypatch.setattr(sd.subprocess, "run", boom)
+    try:
+        sd._run_osascript('tell app "Terminal" to do script "echo hi"')
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "do script" in str(e).lower()
+
+
+def test_dedupe_god_claude_by_tty_and_standalone():
+    from backend.registry import Worker, WorkerStatus
+
+    god = Worker(
+        id="god-session-900",
+        name="God Session · 900",
+        status=WorkerStatus.RUNNING,
+        pid=900,
+        source="session",
+        protected=True,
+        session_tty="ttys000",
+        session_id=None,
+    )
+    claude = Worker(
+        id="claude-session-901",
+        name="Claude Session · 901",
+        status=WorkerStatus.IDLE,
+        pid=901,
+        source="session",
+        protected=True,
+        session_tty="ttys000",
+        session_id=SID,
+    )
+    other = Worker(
+        id="claude-session-902",
+        name="Claude Session · 902",
+        status=WorkerStatus.RUNNING,
+        pid=902,
+        source="session",
+        protected=True,
+        session_tty="ttys008",
+        session_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    )
+    out = dedupe_god_claude_workers([god, claude, other], by_pid={})
+    ids = {w.id for w in out}
+    assert ids == {"god-session-900", "claude-session-902"}
+    kept = next(w for w in out if w.id == "god-session-900")
+    assert kept.session_id == SID
+    assert kept.protected is True
+

@@ -834,12 +834,32 @@ async function sendSteerPrompt(id, inputEl) {
       method: "auto",
     });
     if (input) input.value = "";
-    beginSteerFollow(id, prompt);
+    const sp = data.steer_prompt || {};
+    const injectFailed = sp.ok === false;
+    const summary =
+      sp.summary ||
+      sp.error ||
+      data.spoken_reply ||
+      (injectFailed ? "Steer not submitted to terminal (inbox only)." : "Prompt sent.");
+    // speak:false always for UI steer; still show summary/error in panel + history
     afterUiAction(`steer ${id}`, data, {
-      spoken: data.spoken_reply || data.steer_prompt?.summary || "Prompt sent.",
+      spoken: summary,
       action: "steer_prompt",
       silent: true,
     });
+    if (injectFailed) {
+      if (selectedWorkerId !== id) {
+        openSessionPanel(id, { skipFocusPost: false });
+      } else {
+        paintSessionPanel(findWorker(id) || { id });
+      }
+      const pre = document.querySelector(`[data-live-log="${CSS.escape(id)}"]`);
+      if (pre) {
+        pre.textContent = `>>> steer FAILED — not typed into terminal\n${summary}`;
+      }
+    } else {
+      beginSteerFollow(id, prompt);
+    }
     await refreshWorkers().catch(() => {});
     tickLiveLogs();
   } catch (e) {

@@ -32,14 +32,15 @@ def test_list_shows_god_and_claude_sessions_protected(tmp_path):
     )
     by_id = {w.id: w for w in adapter.list_workers()}
     assert "god-session-900" in by_id
-    assert "claude-session-901" in by_id
+    # God+Claude sharing tty/tree → one row (prefer god-session)
+    assert "claude-session-901" not in by_id
     assert "mcp-hands-911" in by_id
-    assert by_id["god-session-900"].protected is True
-    assert by_id["claude-session-901"].protected is True
-    assert by_id["claude-session-901"].source == "session"
-    assert by_id["claude-session-901"].session_id == "146e90ce-078b-4f95-9200-1a4d52322c0c"
-    assert by_id["claude-session-901"].session_tty == "ttys000"
-    assert "resume" in (by_id["claude-session-901"].session_hint or "")
+    gw = by_id["god-session-900"]
+    assert gw.protected is True
+    assert gw.source == "session"
+    assert gw.session_id == "146e90ce-078b-4f95-9200-1a4d52322c0c"
+    assert gw.session_tty == "ttys000"
+    assert "resume" in (gw.session_hint or "") or "146e90ce" in (gw.session_hint or "")
     assert by_id["mcp-hands-911"].protected is False
 
 
@@ -94,3 +95,26 @@ def test_registry_bare_refuses_explicit_allows():
         reg.pause("god")
     out = reg.pause("god-session-900")
     assert out["after"]["status"] == "paused"
+
+def test_standalone_claude_session_still_listed(tmp_path):
+    """Claude without a linked god parent stays its own worker."""
+    terminal = _proc(704, "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal", tty="??")
+    zsh = _proc(835, "-zsh", ppid=704, tty="ttys009")
+    claude = _proc(
+        901,
+        "claude --resume 146e90ce-078b-4f95-9200-1a4d52322c0c",
+        ppid=835,
+        tty="ttys009",
+    )
+    adapter = GodModeAdapter(
+        stack=STACK,
+        include_demo=False,
+        _procs=[terminal, zsh, claude],
+        _deny_pids=set(),
+        targets_path=tmp_path / "t.json",
+    )
+    by_id = {w.id: w for w in adapter.list_workers()}
+    assert "claude-session-901" in by_id
+    assert not any(i.startswith("god-session-") for i in by_id)
+    assert by_id["claude-session-901"].session_id == "146e90ce-078b-4f95-9200-1a4d52322c0c"
+

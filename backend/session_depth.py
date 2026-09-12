@@ -9,7 +9,9 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import platform
 import re
+import subprocess
 import termios
 import time
 from dataclasses import dataclass, field
@@ -63,7 +65,9 @@ class SteerDelivery:
     error: str | None = None
     worker_id: str | None = None
     session_id: str | None = None
-    submit: str | None = None  # e.g. "cr+tiocsti" when keystroke Enter sent
+    submit: str | None = None  # e.g. "cr+tiocsti" / "cr+applescript-terminal"
+    delivered: bool = False  # True only when prompt+Enter reached the live tty
+    session_app: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +80,8 @@ class SteerDelivery:
             "worker_id": self.worker_id,
             "session_id": self.session_id,
             "submit": self.submit,
+            "delivered": self.delivered,
+            "session_app": self.session_app,
         }
 
 
@@ -483,7 +489,6 @@ def inbox_dir(*, stack: str | Path | None = None, root: Path | None = None) -> P
     d.mkdir(parents=True, exist_ok=True)
     return d
 
-
 def write_steer_inbox(
     *,
     worker_id: str,
@@ -493,6 +498,7 @@ def write_steer_inbox(
     pid: int | None = None,
     source: str | None = None,
     inbox_root: Path | None = None,
+    delivered: bool = False,
 ) -> Path:
     text = (prompt or "").strip()
     if not text:
@@ -509,7 +515,7 @@ def write_steer_inbox(
         "pid": pid,
         "source": source,
         "prompt": text,
-        "delivered": False,
+        "delivered": bool(delivered),
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     # Also append to a per-worker jsonl for easy tailing
@@ -519,20 +525,23 @@ def write_steer_inbox(
     return path
 
 
-def inject_tty_prompt(tty: str, prompt: str) -> None:
-    """Inject prompt as keystrokes into /dev/<tty>, then submit with CR (Enter).
+def mark_inbox_delivered(path: Path | str, *, submit: str | None = None) -> None:
+    """Flip delivered:true on the inbox JSON after a successful tty submit."""
+    p = Path(path)
+    if not p.is_file():
+        return
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    data["delivered"] = True
+    if submit:
+        data["submit"] = submit
+    data["delivered_at"] = datetime.now(timezone.utc).isoformat()
+    p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
-    Uses TIOCSTI so characters enter the TTY *input* queue (as if typed), not
-    merely written to the display. Submit is ASCII CR (\\r) — the Enter key —
-    because raw/TUI readers (agy, ink, etc.) often ignore a lone LF write and
-    leave the line half-entered.
 
-    Does not change termios/line discipline; only queues input chars. Explicit
-    send only — never auto.
-    """
-    t = (tty or "").strip()
-    if not t or t in {"?", "??", "-"}:
-        raise ValueError("no tty for inject")
+def _sanitize_inject_text(prompt: str) -> str:
     text = (prompt or "").strip()
     if not text:
         raise ValueError("empty steer prompt")
@@ -542,6 +551,38 @@ def inject_tty_prompt(tty: str, prompt: str) -> None:
     if "\n" in text or "\r" in text:
         # Single-line inject only (avoid paste bombs)
         text = re.sub(r"[\r\n]+", " ", text).strip()
+    return text
+
+
+def _normalize_tty_name(tty: str) -> str:
+    t = (tty or "").strip()
+    if not t or t in {"?", "??", "-"}:
+        raise ValueError("no tty for inject")
+    if t.startswith("/dev/"):
+        t = t[len("/dev/") :]
+    return t
+
+
+def _applescript_quote(s: str) -> str:
+    """Quote a Python string as an AppleScript string literal."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def inject_tty_tiocsti(tty: str, prompt: str) -> str:
+    """Inject prompt as keystrokes into /dev/<tty>, then submit with CR (Enter).
+
+    Uses TIOCSTI so characters enter the TTY *input* queue (as if typed), not
+    merely written to the display. Submit is ASCII CR (\\r) — the Enter key —
+    because raw/TUI readers (agy, ink, etc.) often ignore a lone LF write and
+    leave the line half-entered.
+
+    Does not change termios/line discipline; only queues input chars. Explicit
+    send only — never auto.
+
+    Returns submit tag "cr+tiocsti".
+    """
+    t = _normalize_tty_name(tty)
+    text = _sanitize_inject_text(prompt)
     dev = Path("/dev") / t
     if not dev.exists():
         raise FileNotFoundError(f"tty device missing: {dev}")
@@ -562,8 +603,179 @@ def inject_tty_prompt(tty: str, prompt: str) -> None:
                 ) from e
     finally:
         os.close(fd)
+    return "cr+tiocsti"
 
 
+def inject_tty_prompt(tty: str, prompt: str) -> str:
+    """Backward-compatible TIOCSTI inject (returns submit tag)."""
+    return inject_tty_tiocsti(tty, prompt)
+
+
+def _run_osascript(script: str, *, timeout: float = 12.0) -> str:
+    """Run AppleScript. HARD BAN: never open new Terminal/iTerm windows/tabs.
+
+    Scripts must only select an existing tab/session by tty. Reject any script
+    that uses Terminal `do script` or `make new` (those spawn windows).
+    """
+    low = (script or "").lower()
+    if "do script" in low:
+        raise RuntimeError(
+            "refusing AppleScript that uses 'do script' (would open a new Terminal window)"
+        )
+    if "make new" in low:
+        raise RuntimeError(
+            "refusing AppleScript that uses 'make new' (would open a new window/tab)"
+        )
+    try:
+        proc = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("osascript not found") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("osascript timed out") from e
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+        raise RuntimeError(err)
+    return (proc.stdout or "").strip()
+
+
+_TERMINAL_APPLESCRIPT = '''
+set targetTTY to __Q_TTY__
+set targetDev to __Q_DEV__
+set typed to __Q_TEXT__
+tell application "Terminal"
+  set matched to false
+  set winCount to count of windows
+  repeat with wi from 1 to winCount
+    set w to window wi
+    set tabCount to count of tabs of w
+    repeat with ti from 1 to tabCount
+      set tabTTY to (tty of tab ti of w) as text
+      if tabTTY is targetDev or tabTTY is targetTTY or tabTTY ends with targetTTY then
+        set selected of tab ti of w to true
+        set frontmost of w to true
+        set index of w to 1
+        set matched to true
+        exit repeat
+      end if
+    end repeat
+    if matched then exit repeat
+  end repeat
+  if not matched then error "no Terminal.app tab for " & targetTTY
+  activate
+end tell
+delay 0.15
+tell application "System Events"
+  if not (exists process "Terminal") then error "Terminal process missing"
+  tell process "Terminal"
+    set frontmost to true
+    keystroke typed
+    keystroke return
+  end tell
+end tell
+'''
+
+
+_ITERM_APPLESCRIPT = '''
+set targetTTY to __Q_TTY__
+set targetDev to __Q_DEV__
+set typed to __Q_TEXT__
+tell application "iTerm"
+  set matched to false
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        set sessTTY to ""
+        try
+          set sessTTY to (tty of s) as text
+        end try
+        if sessTTY is targetDev or sessTTY is targetTTY or sessTTY ends with targetTTY then
+          select t
+          tell s
+            write text typed
+          end tell
+          set matched to true
+          exit repeat
+        end if
+      end repeat
+      if matched then exit repeat
+    end repeat
+    if matched then exit repeat
+  end repeat
+  if not matched then error "no iTerm session for " & targetTTY
+  activate
+end tell
+'''
+
+
+def inject_tty_applescript(
+    tty: str,
+    prompt: str,
+    *,
+    app: str | None = None,
+) -> str:
+    """macOS fallback: type prompt + Return into an EXISTING Terminal.app / iTerm tab.
+
+    Prefer Terminal.app when app is Terminal.app or unknown (agy/grok/god default).
+    iTerm uses native `write text` (includes newline). Terminal.app selects the
+    matching tab then System Events keystroke + return.
+
+    NEVER opens a new window/tab (`do script` / `make new` are banned). If no
+    existing tab matches the tty, raise — caller keeps inbox and surfaces error.
+
+    Requires Accessibility for System Events keystrokes (Terminal path).
+    Returns submit tag like "cr+applescript-terminal".
+    """
+    if platform.system() != "Darwin":
+        raise RuntimeError("AppleScript inject only available on macOS")
+    t = _normalize_tty_name(tty)
+    text = _sanitize_inject_text(prompt)
+    app_l = (app or "").strip().lower()
+    prefer_iterm = "iterm" in app_l
+    if prefer_iterm:
+        order = ("iterm", "terminal")
+    else:
+        order = ("terminal", "iterm")
+
+    errors: list[str] = []
+    for kind in order:
+        try:
+            if kind == "terminal":
+                _inject_terminal_applescript(t, text)
+                return "cr+applescript-terminal"
+            _inject_iterm_applescript(t, text)
+            return "cr+applescript-iterm"
+        except Exception as e:
+            errors.append(f"{kind}: {e}")
+            continue
+    raise RuntimeError("; ".join(errors) or "AppleScript inject failed")
+
+
+def _inject_terminal_applescript(tty_name: str, text: str) -> None:
+    """Activate Terminal.app tab whose tty matches, keystroke text, Return."""
+    script = (
+        _TERMINAL_APPLESCRIPT
+        .replace("__Q_TTY__", _applescript_quote(tty_name))
+        .replace("__Q_DEV__", _applescript_quote(f"/dev/{tty_name}"))
+        .replace("__Q_TEXT__", _applescript_quote(text))
+    )
+    _run_osascript(script)
+
+
+def _inject_iterm_applescript(tty_name: str, text: str) -> None:
+    """Find iTerm session by tty and write text (includes newline)."""
+    script = (
+        _ITERM_APPLESCRIPT
+        .replace("__Q_TTY__", _applescript_quote(tty_name))
+        .replace("__Q_DEV__", _applescript_quote(f"/dev/{tty_name}"))
+        .replace("__Q_TEXT__", _applescript_quote(text))
+    )
+    _run_osascript(script)
 
 
 def deliver_steer_prompt(
@@ -577,13 +789,22 @@ def deliver_steer_prompt(
     method: str = "auto",
     inbox_root: Path | None = None,
     inject_fn=None,
+    applescript_fn=None,
+    session_app: str | None = None,
 ) -> SteerDelivery:
-    """Always write inbox. TTY inject only when method is tty/auto and tty present.
+    """Always write inbox. TTY inject when method is tty/auto and tty present.
+
+    Order on macOS (cli/session with known tty):
+      1) TIOCSTI (+ CR)
+      2) Terminal.app / iTerm AppleScript keystroke + Return
 
     method:
       - inbox: inbox only (safe)
       - tty: inbox + tty (explicit)
       - auto: inbox + tty when tty is known (UI/voice Send is always explicit)
+
+    delivered=True only when prompt+Enter reached the live terminal. Inbox-only
+    after a failed inject returns ok=False so UI/API never pretend success.
     """
     text = (prompt or "").strip()
     if not text:
@@ -593,6 +814,8 @@ def deliver_steer_prompt(
             error="empty steer prompt",
             worker_id=worker_id,
             session_id=session_id,
+            delivered=False,
+            session_app=session_app,
         )
     try:
         path = write_steer_inbox(
@@ -603,6 +826,7 @@ def deliver_steer_prompt(
             pid=pid,
             source=source,
             inbox_root=inbox_root,
+            delivered=False,
         )
     except Exception as e:
         return SteerDelivery(
@@ -611,36 +835,78 @@ def deliver_steer_prompt(
             error=f"inbox write failed: {e}",
             worker_id=worker_id,
             session_id=session_id,
+            delivered=False,
+            session_app=session_app,
         )
 
     m = (method or "auto").strip().lower()
     want_tty = m in {"tty", "auto", "inbox+tty"}
     tty_n = (tty or "").strip() or None
     if want_tty and tty_n:
+        errors: list[str] = []
+        # 1) TIOCSTI (or injected test double)
         try:
-            fn = inject_fn or inject_tty_prompt
-            fn(tty_n, text)
+            fn = inject_fn or inject_tty_tiocsti
+            submit = fn(tty_n, text)
+            if submit is None:
+                submit = "cr+tiocsti"
+            mark_inbox_delivered(path, submit=str(submit))
             return SteerDelivery(
                 ok=True,
                 method="inbox+tty",
                 inbox_path=str(path),
                 tty=tty_n,
-                summary=f"prompt+Enter delivered to {tty_n} (inbox {path.name})",
+                summary=f"prompt+Enter delivered to {tty_n} via {submit} (inbox {path.name})",
                 worker_id=worker_id,
                 session_id=session_id,
-                submit="cr+tiocsti",
+                submit=str(submit),
+                delivered=True,
+                session_app=session_app,
             )
         except Exception as e:
-            return SteerDelivery(
-                ok=True,  # inbox succeeded
-                method="inbox",
-                inbox_path=str(path),
-                tty=tty_n,
-                summary=f"inbox saved; tty inject failed: {e}",
-                error=f"tty inject failed: {e}",
-                worker_id=worker_id,
-                session_id=session_id,
-            )
+            errors.append(f"tiocsti: {e}")
+
+        # 2) macOS AppleScript fallback (Terminal.app / iTerm)
+        if platform.system() == "Darwin" or applescript_fn is not None:
+            try:
+                as_fn = applescript_fn or inject_tty_applescript
+                submit = as_fn(tty_n, text, app=session_app)
+                if submit is None:
+                    submit = "cr+applescript"
+                mark_inbox_delivered(path, submit=str(submit))
+                return SteerDelivery(
+                    ok=True,
+                    method="inbox+tty",
+                    inbox_path=str(path),
+                    tty=tty_n,
+                    summary=(
+                        f"prompt+Enter delivered to {tty_n} via {submit} "
+                        f"(TIOCSTI failed; inbox {path.name})"
+                    ),
+                    worker_id=worker_id,
+                    session_id=session_id,
+                    submit=str(submit),
+                    delivered=True,
+                    session_app=session_app,
+                )
+            except Exception as e:
+                errors.append(f"applescript: {e}")
+
+        err_msg = "tty inject failed: " + " | ".join(errors)
+        return SteerDelivery(
+            ok=False,  # inbox kept, but do NOT pretend terminal delivery
+            method="inbox",
+            inbox_path=str(path),
+            tty=tty_n,
+            summary=(
+                f"NOT submitted to terminal ({tty_n}). Inbox only ({path.name}). {err_msg}"
+            ),
+            error=err_msg,
+            worker_id=worker_id,
+            session_id=session_id,
+            delivered=False,
+            session_app=session_app,
+        )
     return SteerDelivery(
         ok=True,
         method="inbox",
@@ -650,4 +916,6 @@ def deliver_steer_prompt(
         + ("" if tty_n else " — no tty to inject"),
         worker_id=worker_id,
         session_id=session_id,
+        delivered=False,
+        session_app=session_app,
     )

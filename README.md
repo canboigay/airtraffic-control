@@ -137,6 +137,12 @@ Kill still requires `confirm kill`. GUI denylist and god/claude TUI wrappers can
 
 
 
+## Session steer (macOS tty)
+
+Steer prompts always land in the inbox. Live submit tries TIOCSTI first; on macOS Permission denied, falls back to AppleScript that selects the **existing** Terminal.app / iTerm tab by tty and types Enter — never `do script` / never opens a new window. If no tab matches, inbox is kept and the UI shows the error. **Accessibility** must be granted for the ATC/Python process (System Settings → Privacy & Security → Accessibility) so System Events can keystroke into Terminal.
+
+God Mode + Claude CLI that share a tty and/or `--resume` session id (or claude under the god launcher) list as **one** worker (prefer `god-session`); standalone claude still appears alone.
+
 ## God Mode single steer path
 
 `redirect` / `steer` on a discovered **God RT** worker is no longer label-only. Voice, text, and UI all hit one path:

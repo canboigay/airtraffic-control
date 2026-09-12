@@ -648,6 +648,108 @@ def lookup_target(targets: dict[str, str], worker_id: str, pid: int | None) -> s
     return None
 
 
+
+def _known_session_tty(tty: str | None) -> str | None:
+    """Return normalized tty name, or None if unknown/absent (never match on '?')."""
+    t = (tty or "").strip()
+    if not t or t in {"?", "??", "-"}:
+        return None
+    if t.startswith("/dev/"):
+        t = t[len("/dev/") :]
+    return t or None
+
+
+def _claude_under_god(claude_pid: int | None, god_pid: int | None, by_pid: dict[int, "Proc"]) -> bool:
+    """True if claude_pid has god_pid as an ancestor in by_pid."""
+    if claude_pid is None or god_pid is None or not by_pid:
+        return False
+    cur = by_pid.get(claude_pid)
+    seen: set[int] = set()
+    while cur is not None:
+        if cur.pid == god_pid:
+            return True
+        if cur.pid in seen:
+            break
+        seen.add(cur.pid)
+        if cur.ppid in seen:
+            break
+        cur = by_pid.get(cur.ppid)
+    return False
+
+
+def dedupe_god_claude_workers(
+    workers: list,
+    *,
+    by_pid: dict[int, "Proc"] | None = None,
+) -> list:
+    """Collapse paired god-session + claude-session into one worker (prefer god).
+
+    Merge when they share a known tty and/or session_id, or when the claude
+    process is under the god launcher in the process tree. Standalone claude
+    (no linked god) stays listed. Keeps protected + session_id/tty/resume on
+    the surviving god-session row.
+    """
+    gods = [w for w in workers if (w.id or "").startswith("god-session-")]
+    claudes = [w for w in workers if (w.id or "").startswith("claude-session-")]
+    if not gods or not claudes:
+        return workers
+
+    bp = by_pid or {}
+    drop: set[str] = set()
+
+    def linked(god, claude) -> bool:
+        gt = _known_session_tty(getattr(god, "session_tty", None))
+        ct = _known_session_tty(getattr(claude, "session_tty", None))
+        if gt and ct and gt == ct:
+            return True
+        gid = getattr(god, "session_id", None)
+        cid = getattr(claude, "session_id", None)
+        if gid and cid and gid == cid:
+            return True
+        if _claude_under_god(getattr(claude, "pid", None), getattr(god, "pid", None), bp):
+            return True
+        return False
+
+    for claude in claudes:
+        peers = [g for g in gods if g.id not in drop and linked(g, claude)]
+        if not peers:
+            continue
+        god = peers[0]
+        for g in peers:
+            if (
+                getattr(g, "session_id", None)
+                and getattr(claude, "session_id", None)
+                and g.session_id == claude.session_id
+            ):
+                god = g
+                break
+        drop.add(claude.id)
+        # Enrich god with claude resume / tty / app when missing
+        if not getattr(god, "session_id", None) and getattr(claude, "session_id", None):
+            god.session_id = claude.session_id
+        if not _known_session_tty(getattr(god, "session_tty", None)) and _known_session_tty(
+            getattr(claude, "session_tty", None)
+        ):
+            god.session_tty = claude.session_tty
+        if not getattr(god, "session_app", None) and getattr(claude, "session_app", None):
+            god.session_app = claude.session_app
+        # Prefer a hint that includes resume when god lacked it
+        ch = getattr(claude, "session_hint", None) or ""
+        gh = getattr(god, "session_hint", None) or ""
+        if claude.session_id and claude.session_id not in gh:
+            if ch and claude.session_id in ch:
+                god.session_hint = ch
+            elif gh:
+                god.session_hint = f"{gh} · resume {claude.session_id[:8]}"
+            else:
+                god.session_hint = ch or f"resume {claude.session_id[:8]}"
+        god.protected = True
+
+    if not drop:
+        return workers
+    return [w for w in workers if w.id not in drop]
+
+
 class GodModeAdapter:
     """Live local-process adapter for the God Mode stack (and leftover demo scripts)."""
 
@@ -844,12 +946,13 @@ class GodModeAdapter:
         assigned = assign_ids(selected, stack=self.stack)
         by_pid = {p.pid: p for p in procs}
         cwd_map = read_cwds_cheap(p.pid for _, p in assigned)
-        return [
+        workers = [
             self._to_worker(
                 wid, proc, targets, all_procs=procs, cwd_map=cwd_map, by_pid=by_pid
             )
             for wid, proc in assigned
         ]
+        return dedupe_god_claude_workers(workers, by_pid=by_pid)
 
     def _require(self, worker_id: str) -> str:
         key = _norm(worker_id)
@@ -1224,6 +1327,7 @@ class GodModeAdapter:
             pid=proc.pid,
             source=worker.source,
             method=method,
+            session_app=worker.session_app,
         )
         self._last_steer = {
             "kind": "steer_prompt",
