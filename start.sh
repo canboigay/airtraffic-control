@@ -48,7 +48,7 @@ ensure_venv() {
   fi
   # shellcheck disable=SC1091
   source .venv/bin/activate
-  pip install -q -r requirements.txt
+  python -m pip install -q -r requirements.txt
 }
 
 load_keychain_key

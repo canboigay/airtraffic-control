@@ -4,64 +4,105 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AiRTraffic Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <div class="scanlines" aria-hidden="true"></div>
   <div class="app">
-    <header>
+    <header class="topbar">
       <div class="brand">
-        <span class="logo">ATC</span>
-        <div>
+        <div class="mark" aria-hidden="true">
+          <span class="mark-ring"></span>
+          <span class="mark-core">ATC</span>
+        </div>
+        <div class="brand-copy">
+          <p class="facility">SECTOR · AGENT FLEET</p>
           <h1>AiRTraffic Control</h1>
-          <p class="tag">Voice ATC for AI agent fleets · Speechmatics Realtime</p>
         </div>
       </div>
-      <div id="connBadge" class="badge idle">Idle</div>
+      <div class="top-meta">
+        <div class="meta-block">
+          <span class="meta-k">FREQ</span>
+          <span class="meta-v">SPEECHMATICS RT</span>
+        </div>
+        <div class="meta-block">
+          <span class="meta-k">MODE</span>
+          <span class="meta-v">TOWER</span>
+        </div>
+        <div id="connBadge" class="badge idle">IDLE</div>
+      </div>
     </header>
 
-    <section class="listen-panel" id="listenPanel">
-      <div class="orb" id="orb"></div>
-      <div class="listen-label" id="listenLabel">Press Listen</div>
-      <div class="partial" id="partial"></div>
-      <div class="final" id="final"></div>
-      <div class="controls">
-        <button id="btnListen" class="primary">Listen</button>
-        <button id="btnStop" class="ghost" disabled>Stop</button>
-      </div>
-      <p class="hint">Try: “status” · “pause fake build” · “kill log spam” then “confirm kill” · “redirect research to docs”</p>
-    </section>
-
-    <section class="grid">
-      <div class="card">
-        <div class="card-head">
-          <h2>Workers</h2>
-          <button id="btnRefresh" class="ghost sm">Refresh</button>
+    <main class="board">
+      <section class="scope-card" id="listenPanel">
+        <div class="scope-frame">
+          <div class="radar" id="orb" aria-hidden="true">
+            <div class="radar-grid"></div>
+            <div class="radar-sweep"></div>
+            <div class="radar-blip b1"></div>
+            <div class="radar-blip b2"></div>
+            <div class="radar-blip b3"></div>
+            <div class="radar-cross"></div>
+          </div>
+          <div class="scope-copy">
+            <p class="scope-kicker">VOICE CHANNEL</p>
+            <div class="listen-label" id="listenLabel">STANDBY — PRESS LISTEN</div>
+            <div class="partial" id="partial"></div>
+            <div class="final" id="final"></div>
+            <div class="controls">
+              <button id="btnListen" class="primary">LISTEN</button>
+              <button id="btnStop" class="ghost" disabled>STOP</button>
+            </div>
+            <p class="hint">status · pause fake build · kill log spam → confirm kill · redirect research to docs</p>
+          </div>
         </div>
-        <table id="workersTable">
-          <thead>
-            <tr><th>Name</th><th>Status</th><th>PID</th><th>Target</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
+      </section>
 
-      <div class="card">
-        <div class="card-head">
-          <h2>Audit log</h2>
-          <span class="muted">prove-it receipts</span>
+      <aside class="strips">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>ACTIVE STRIPS</h2>
+            <button id="btnRefresh" class="ghost sm">SYNC</button>
+          </div>
+          <div class="table-wrap">
+            <table id="workersTable">
+              <thead>
+                <tr><th>Callsign</th><th>State</th><th>PID</th><th>Clearance</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
-        <ul id="auditList" class="audit"></ul>
-      </div>
-    </section>
 
-    <section class="card fallback">
-      <h2>Text fallback <span class="muted">(demo without mic)</span></h2>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>PROVE-IT TAPE</h2>
+            <span class="muted">BEFORE → AFTER</span>
+          </div>
+          <ul id="auditList" class="audit"></ul>
+        </div>
+      </aside>
+    </main>
+
+    <section class="panel fallback">
+      <div class="panel-head">
+        <h2>TEXT BACKUP</h2>
+        <span class="muted">NO MIC / DEMO</span>
+      </div>
       <form id="textForm" class="text-row">
-        <input id="textCmd" type="text" placeholder="status / pause fake build / kill log spam / confirm kill" autocomplete="off" />
-        <button type="submit" class="primary sm">Send</button>
+        <input id="textCmd" type="text" placeholder="issue clearance…" autocomplete="off" spellcheck="false" />
+        <button type="submit" class="primary sm">SEND</button>
       </form>
       <pre id="cmdResult" class="result"></pre>
     </section>
+
+    <footer class="foot">
+      <span>AiRTraffic Control · Infra Summit</span>
+      <span>KILL REQUIRES SPOKEN CONFIRM</span>
+    </footer>
   </div>
   <script src="/static/app.js"></script>
 </body>
